@@ -216,3 +216,35 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ============================================================
+# OpenEarthMap PoC project-specific ignores
+# ============================================================
+
+# Run outputs
+runs/
+
+# Generated output directories from exploratory / legacy scripts
+outputs/
+outputs_geotiff/
+analysis_results/
+
+# Model weights / checkpoints
+*.pth
+*.pt
+*.ckpt
+
+# Generated GIS data
+*.tif
+*.tiff
+*.gpkg
+
+# Optional generated image outputs
+*.png
+*.jpg
+*.jpeg
+
+# Local model / external repository directories
+OpenEarthMap-SAR/
+open_earth_map/
+　
