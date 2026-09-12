@@ -9,7 +9,10 @@ import segmentation_models_pytorch as smp
 BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_PATH = (
-    BASE_DIR
+    BASE_DIR.parent
+    / "OpenEarthMap-SAR"
+    / "src"
+    / "Semantic_Segemtation"
     / "pretrained"
     / "RGB_Real_5_u-efficientnet-b4.pth"
 )
