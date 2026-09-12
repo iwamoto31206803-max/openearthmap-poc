@@ -12,7 +12,7 @@ DEFAULT_THRESHOLDS = [1.0, 2.0, 5.0, 10.0]
 def read_landcover_gpkg(path: Path, layer: str) -> gpd.GeoDataFrame:
     gdf = gpd.read_file(path, layer=layer)
 
-    required = {"class_id", "class_name", "area_m2", "mean_conf"}
+    required = {"class_id", "class_name", "area_m2"}
     missing = required - set(gdf.columns)
     if missing:
         raise ValueError(
@@ -21,7 +21,16 @@ def read_landcover_gpkg(path: Path, layer: str) -> gpd.GeoDataFrame:
 
     gdf = gdf.copy()
     gdf["area_m2"] = pd.to_numeric(gdf["area_m2"], errors="coerce")
-    gdf["mean_conf"] = pd.to_numeric(gdf["mean_conf"], errors="coerce")
+
+    # mean_conf is optional. Sieve outputs are intentionally polygonized
+    # without confidence because the raw model confidence is no longer a
+    # confidence measure for pixels whose class was changed by sieve.
+    if "mean_conf" in gdf.columns:
+        gdf["mean_conf"] = pd.to_numeric(
+            gdf["mean_conf"], errors="coerce"
+        )
+    else:
+        gdf["mean_conf"] = np.nan
 
     gdf = gdf[np.isfinite(gdf["area_m2"])]
     return gdf
@@ -33,6 +42,7 @@ def overall_summary(gdf: gpd.GeoDataFrame, source_name: str) -> dict:
 
     return {
         "source": source_name,
+        "has_confidence": bool(conf.notna().any()),
         "polygon_count": int(len(gdf)),
         "total_area_m2": total_area,
         "median_area_m2": float(gdf["area_m2"].median()),
@@ -255,9 +265,12 @@ def write_text_report(
         lines.append(
             f"Median area   : {overall['median_area_m2']:.2f} m2"
         )
-        lines.append(
-            f"Median conf   : {overall['median_conf']:.3f}"
-        )
+        if pd.notna(overall["median_conf"]):
+            lines.append(
+                f"Median conf   : {overall['median_conf']:.3f}"
+            )
+        else:
+            lines.append("Median conf   : n/a (structural analysis)")
         lines.append("")
 
         lines.append("Small-polygon thresholds")
@@ -273,12 +286,17 @@ def write_text_report(
 
         lines.append("Class summary")
         for _, row in cls.sort_values("class_id").iterrows():
+            conf_text = (
+                f"{row['median_conf']:.3f}"
+                if pd.notna(row["median_conf"])
+                else "n/a"
+            )
             lines.append(
                 f"  {int(row['class_id'])}: {row['class_name']} | "
                 f"n={int(row['polygon_count'])}, "
                 f"area={row['total_area_m2']:.1f} m2, "
                 f"median area={row['median_area_m2']:.2f} m2, "
-                f"median conf={row['median_conf']:.3f}, "
+                f"median conf={conf_text}, "
                 f"<5m2={row['count_lt5m2_pct']:.1f}%"
             )
         lines.append("")
@@ -369,6 +387,7 @@ def main():
     class_df = pd.DataFrame(class_rows)
     joint_df = pd.DataFrame(joint_rows)
     candidate_df = pd.concat(candidate_frames, ignore_index=True)
+    has_any_confidence = bool(overall_df["has_confidence"].any())
 
     overall_path = output_dir / "overall_summary.csv"
     threshold_path = output_dir / "threshold_summary.csv"
@@ -380,8 +399,11 @@ def main():
     overall_df.to_csv(overall_path, index=False, encoding="utf-8-sig")
     threshold_df.to_csv(threshold_path, index=False, encoding="utf-8-sig")
     class_df.to_csv(class_path, index=False, encoding="utf-8-sig")
-    joint_df.to_csv(joint_path, index=False, encoding="utf-8-sig")
-    candidate_df.to_csv(candidate_path, index=False, encoding="utf-8-sig")
+    if has_any_confidence:
+        joint_df.to_csv(joint_path, index=False, encoding="utf-8-sig")
+        candidate_df.to_csv(
+            candidate_path, index=False, encoding="utf-8-sig"
+        )
 
     write_text_report(
         report_path,
@@ -396,15 +418,19 @@ def main():
     print("Overall summary       :", overall_path)
     print("Threshold summary     :", threshold_path)
     print("Class summary         :", class_path)
-    print("Area x confidence     :", joint_path)
-    print("Candidate polygons    :", candidate_path)
+    if has_any_confidence:
+        print("Area x confidence     :", joint_path)
+        print("Candidate polygons    :", candidate_path)
+    else:
+        print("Confidence outputs    : skipped (mean_conf not present)")
     print("Text report           :", report_path)
-    print()
-    print(
-        "Candidate rule        : "
-        f"area < {args.candidate_max_area:g} m2 AND "
-        f"mean_conf < {args.candidate_max_conf:g}"
-    )
+    if has_any_confidence:
+        print()
+        print(
+            "Candidate rule        : "
+            f"area < {args.candidate_max_area:g} m2 AND "
+            f"mean_conf < {args.candidate_max_conf:g}"
+        )
 
 
 if __name__ == "__main__":
