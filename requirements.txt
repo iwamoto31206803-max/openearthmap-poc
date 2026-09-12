@@ -1,0 +1,9 @@
+numpy
+Pillow
+rasterio
+torch
+segmentation-models-pytorch
+geopandas
+pandas
+pyproj
+shapely
