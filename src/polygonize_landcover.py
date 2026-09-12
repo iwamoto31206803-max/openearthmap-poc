@@ -11,17 +11,7 @@ from shapely.geometry import mapping, shape
 from shapely.ops import transform as shapely_transform
 
 
-CLASS_NAMES = {
-    0: "Background / Unlabelled",
-    1: "Bareland",
-    2: "Grass / Rangeland",
-    3: "Pavement / Developed space",
-    4: "Road",
-    5: "Tree",
-    6: "Water",
-    7: "Cropland / Agriculture",
-    8: "Buildings",
-}
+from config import CLASS_NAMES
 
 GEOD = Geod(ellps="WGS84")
 

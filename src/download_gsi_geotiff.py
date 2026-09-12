@@ -9,10 +9,11 @@ from PIL import Image
 import rasterio
 from rasterio.transform import from_bounds
 
-TILE_SIZE = 256
+from config import GSI_SOURCE_NAME, GSI_SOURCE_NAME_JP, GSI_TILE_SIZE, GSI_TILE_URL
+
+TILE_SIZE = GSI_TILE_SIZE
 WEB_MERCATOR_RADIUS = 6378137.0
 ORIGIN_SHIFT = math.pi * WEB_MERCATOR_RADIUS
-GSI_TILE_URL = "https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg"
 
 
 def lonlat_to_tile(lon: float, lat: float, zoom: int):
@@ -120,8 +121,8 @@ def main():
         dst.set_band_description(2, "Green")
         dst.set_band_description(3, "Blue")
         dst.update_tags(
-            source="GSI Tiles / Seamless Aerial Photography",
-            source_jp="国土地理院 全国最新写真（シームレス）",
+            source=GSI_SOURCE_NAME,
+            source_jp=GSI_SOURCE_NAME_JP,
             center_lat=str(args.lat),
             center_lon=str(args.lon),
             zoom=str(args.zoom),

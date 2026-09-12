@@ -6,46 +6,16 @@ import rasterio
 import torch
 import segmentation_models_pytorch as smp
 
-CLASS_NAMES = {
-    0: "Background / Unlabelled",
-    1: "Bareland",
-    2: "Grass / Rangeland",
-    3: "Pavement / Developed space",
-    4: "Road",
-    5: "Tree",
-    6: "Water",
-    7: "Cropland / Agriculture",
-    8: "Buildings",
-}
+from config import (
+    CLASS_COLORS,
+    CLASS_NAMES,
+    DEFAULT_OVERLAP,
+    INFERENCE_TILE_SIZE,
+    default_model_path,
+)
 
-CLASS_COLORS = {
-    0: (0, 0, 0, 255),
-    1: (128, 0, 0, 255),
-    2: (0, 255, 36, 255),
-    3: (148, 148, 148, 255),
-    4: (255, 255, 255, 255),
-    5: (34, 97, 38, 255),
-    6: (0, 69, 255, 255),
-    7: (75, 181, 73, 255),
-    8: (222, 31, 7, 255),
-}
-
-TILE_SIZE = 512
-DEFAULT_OVERLAP = 128
+TILE_SIZE = INFERENCE_TILE_SIZE
 DEVICE = "cpu"
-
-
-def default_model_path() -> Path:
-    base_dir = Path(__file__).resolve().parent
-    return (
-        base_dir.parent
-        / "OpenEarthMap-SAR"
-        / "src"
-        / "Semantic_Segemtation"
-        / "pretrained"
-        / "RGB_Real_5_u-efficientnet-b4.pth"
-    )
-
 
 def build_model(model_path: Path) -> torch.nn.Module:
     if not model_path.exists():

@@ -48,6 +48,7 @@ def main() -> None:
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent
+    src_dir = root / "src"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_name = "".join(
         c if c.isalnum() or c in "-_" else "_" for c in args.name
@@ -75,7 +76,7 @@ def main() -> None:
 
     run_command([
         sys.executable,
-        str(root / "download_gsi_geotiff.py"),
+        str(src_dir / "download_gsi_geotiff.py"),
         "--lat", str(args.lat),
         "--lon", str(args.lon),
         "--zoom", str(args.zoom),
@@ -85,7 +86,7 @@ def main() -> None:
 
     run_command([
         sys.executable,
-        str(root / "predict_geotiff_tiled.py"),
+        str(src_dir / "predict_geotiff_tiled.py"),
         str(rgb_path),
         "--model", str(args.model),
         "--overlap", str(args.overlap),
@@ -97,7 +98,7 @@ def main() -> None:
 
     run_command([
         sys.executable,
-        str(root / "sieve_landcover.py"),
+        str(src_dir / "sieve_landcover.py"),
         str(raw_classes),
         "--areas", str(args.sieve_area),
         "--output-dir", str(postprocess_dir),
@@ -111,7 +112,7 @@ def main() -> None:
 
     run_command([
         sys.executable,
-        str(root / "polygonize_landcover.py"),
+        str(src_dir / "polygonize_landcover.py"),
         str(cleaned_classes),
         "--output", str(cleaned_gpkg),
     ])
@@ -121,11 +122,26 @@ def main() -> None:
         raw_gpkg = vector_dir / "landcover_raw.gpkg"
         run_command([
             sys.executable,
-            str(root / "polygonize_landcover.py"),
+            str(src_dir / "polygonize_landcover.py"),
             str(raw_classes),
             "--confidence", str(raw_confidence),
             "--output", str(raw_gpkg),
         ])
+
+    style_command = [
+        sys.executable,
+        str(src_dir / "qgis_styles.py"),
+        "--classes",
+        str(raw_classes),
+        str(cleaned_classes),
+        "--confidence",
+        str(raw_confidence),
+        "--vectors",
+        str(cleaned_gpkg),
+    ]
+    if raw_gpkg is not None:
+        style_command.append(str(raw_gpkg))
+    run_command(style_command)
 
     analysis_inputs = [str(cleaned_gpkg)]
     if raw_gpkg is not None:
@@ -133,7 +149,7 @@ def main() -> None:
 
     run_command([
         sys.executable,
-        str(root / "analyze_landcover_gpkg.py"),
+        str(src_dir / "analyze_landcover_gpkg.py"),
         *analysis_inputs,
         "--output-dir", str(analysis_dir),
     ])
@@ -168,6 +184,15 @@ def main() -> None:
             "cleaned_landcover_gpkg": str(cleaned_gpkg),
             "raw_landcover_gpkg": str(raw_gpkg) if raw_gpkg else None,
             "analysis_dir": str(analysis_dir),
+            "qgis_styles": {
+                "raw_classes": str(raw_classes.with_suffix(".qml")),
+                "raw_confidence": str(raw_confidence.with_suffix(".qml")),
+                "cleaned_classes": str(cleaned_classes.with_suffix(".qml")),
+                "cleaned_landcover": str(cleaned_gpkg.with_suffix(".qml")),
+                "raw_landcover": (
+                    str(raw_gpkg.with_suffix(".qml")) if raw_gpkg else None
+                ),
+            },
         },
         "notes": [
             "Confidence is maximum softmax probability, not empirical accuracy.",
