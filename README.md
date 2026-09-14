@@ -97,6 +97,9 @@ Raw推論と後処理を分離することで、モデル性能とGIS後処理�
 
 詳細は `docs/POC_STATUS_20260912.md` を参照してください。
 
+GSI部分教師データの準備と監査については
+`docs/GSI_TRAINING_DATA.md` を参照してください。
+
 ## Model / license note
 
 現行weightはOpenEarthMap-SARの公開pretrained modelをPoC baselineとして利用しています。
