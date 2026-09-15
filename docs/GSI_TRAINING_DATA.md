@@ -35,3 +35,32 @@ python -m src.training.prepare_gsi_labels dataset_root prepared \
 します。また、ラベル色では説明できない `org` と `val` の画素差を
 `non_label_mismatch_count` として監査します。撮影時期・地区を別途与えないこの段階
 では、撮影日は空欄、精度は `unknown`、地区は空欄です。
+
+## org / val 着色方式の診断
+
+教師生成ロジックを変更する前に、読み取り専用の診断コマンドで差分方式を確認できます。
+Windows の実データに対する実行例です（出力先もGit管理外にしてください）。
+
+```bat
+python -m src.training.diagnose_gsi_overlay ^
+  C:\OpenEarthMap_PoC\data\gsi\raw\paddy_572 ^
+  C:\OpenEarthMap_PoC\data\gsi\diagnostics\paddy_572
+```
+
+全ペアを1枚ずつ読み、`per_image.csv` に画像ID、サイズ、完全一致・非一致画素数と比率を、
+`summary.json` にRGB各channelの符号付き `val - org` histogram、丸めたRGB色差の大きさ、
+頻出する差分RGB、Otsu閾値、非一致画素に対するalpha-blend最小二乗推定を記録します。
+既定の代表画像は `1`、`1300`、`2600` で、`--representative` で変更できます。入力パス、
+元画像、画素値の位置や座標は出力しません。
+
+判断時には次の順で確認します。
+
+1. 固定色は、実データに完全一致するsentinel色が確認できた場合だけ使用する。
+2. 単純非一致は、非教師領域が完全一致し、表示処理等による微差がない場合だけ候補にする。
+3. RGB差分閾値は、色差histogramに画像間で安定した谷がある場合に候補にする。
+4. alpha-blend方式は、推定alphaとoverlay RGBが物理範囲内で、残差RMSEが十分小さい場合に
+   候補にする。
+
+診断には正解maskがないため、`summary.json` だけで方式を自動確定してはいけません。
+候補方式のfalse positive / false negativeを、複数画像の目視maskで検証してから教師生成を
+変更してください。診断出力も実行結果としてGitへ追加しないでください。
