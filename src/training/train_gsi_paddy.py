@@ -1,11 +1,13 @@
-"""Phase A pilot: frozen encoder, GSI paddy class-7 positive-only partial labels."""
+"""Phase A pilot: GSI paddy positive-only v0.1 / Base-preservation v0.2."""
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
+from functools import partial
 from importlib.metadata import version
+from itertools import islice
 import json
 import math
 import os
@@ -22,8 +24,11 @@ from torch.utils.data import DataLoader
 from src.config import CLASS_NAMES, default_model_path
 from src.model import MODEL_KWARGS, PREPROCESSING, build_model
 from src.training.gsi_dataset import (
-    DEFAULT_SEED, TARGET_CLASS, GsiPaddyDataset, collate_padded, scan_dataset,
+    DEFAULT_SEED, TARGET_CLASS, GsiPaddyDataset, collate_padded, collate_preservation, scan_dataset,
     split_samples,
+)
+from src.training.base_preservation import (
+    LIMITATIONS, build_teacher, provenance, run_preservation_epoch, validate_distillation,
 )
 from src.training.prepare_gsi_labels import IGNORE_INDEX, _sha256
 
@@ -131,7 +136,12 @@ def resolve_device(value: str) -> str:
 
 
 def train(args) -> Path:
-    if args.epochs < 1 or args.batch_size < 1 or args.num_threads < 1:
+    preserving = args.training_mode == "base_preservation"
+    epochs = args.epochs if args.epochs is not None else (1 if preserving else 3)
+    validate_distillation(args.lambda_preserve, args.temperature)
+    if args.smoke_test and epochs != 1:
+        raise ValueError("--smoke-test requires --epochs 1 (one optimizer step total)")
+    if epochs < 1 or args.batch_size < 1 or args.num_threads < 1:
         raise ValueError("epochs, batch-size and num-threads must be positive")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
         raise ValueError("learning-rate must be finite and positive")
@@ -142,6 +152,8 @@ def train(args) -> Path:
     device = resolve_device(args.device)
     base_path = args.base_model.resolve()
     base_sha = _sha256(base_path)
+    if args.base_sha256 is not None and base_sha != args.base_sha256.lower():
+        raise ValueError("Base checkpoint SHA256 does not match --base-sha256")
     prepared_path = args.prepared_dir / "manifest.json"
     prepared = json.loads(prepared_path.read_text(encoding="utf-8"))
     if (prepared.get("gsi_category") != "paddy"
@@ -162,6 +174,13 @@ def train(args) -> Path:
     model = build_model(base_path, device=device)
     counts = freeze_encoder(model)
     optimizer = make_optimizer(model, args.learning_rate)
+    teacher = build_teacher(base_path, device) if preserving else None
+    if _sha256(base_path) != base_sha:
+        raise ValueError("Base checkpoint changed during model loading")
+    epoch_runner = partial(
+        run_preservation_epoch, teacher=teacher,
+        lambda_preserve=args.lambda_preserve, temperature=args.temperature,
+    ) if preserving else run_epoch
     print(f"Device: {device}; frozen parameters: {counts['frozen']:,}; "
           f"trainable parameters: {counts['trainable']:,}", flush=True)
     print(f"Images: {actual['image_count']}; positive: {len(usable)}; "
@@ -209,7 +228,7 @@ def train(args) -> Path:
         "train_ratio_actual": len(train_samples) / len(usable),
         "split_method": "sort IDs, random.Random(seed).shuffle, floor(n*ratio), clamp to [1,n-1]",
         "train_image_ids": "train_ids.json", "validation_image_ids": "validation_ids.json",
-        "epochs": args.epochs, "batch_size": args.batch_size,
+        "epochs": epochs, "batch_size": args.batch_size,
         "optimizer": {"name": "AdamW", "weight_decay": 0.01, "betas": [0.9, 0.999], "eps": 1e-8},
         "learning_rate": args.learning_rate, "loss": "CrossEntropyLoss(ignore_index=255, reduction='mean')",
         "epoch_loss_aggregation": "weighted by labeled pixel count across batches",
@@ -232,22 +251,43 @@ def train(args) -> Path:
             "Exact numerical reproducibility across hardware/library versions is not guaranteed.",
         ],
     }
+    manifest.update(
+        training_mode=args.training_mode,
+        run_purpose="preflight" if args.preflight else "smoke_test" if args.smoke_test else "training",
+        max_batches_per_split=1 if args.preflight or args.smoke_test else None,
+        expected_base_sha256=args.base_sha256.lower() if args.base_sha256 else None,
+    )
+    if preserving:
+        manifest.update(schema_version=2, **provenance(base_sha, args.lambda_preserve, args.temperature))
+        manifest["known_limitations"].extend(LIMITATIONS)
     manifest_path = run_dir / "run_manifest.json"
     write_json(manifest_path, manifest)
     print(f"Run output: {run_dir}", flush=True)
     train_loader = DataLoader(
         GsiPaddyDataset(train_samples), batch_size=args.batch_size, shuffle=True,
         generator=torch.Generator().manual_seed(args.seed), num_workers=0,
-        collate_fn=collate_padded,
+        collate_fn=collate_preservation if preserving else collate_padded,
     )
     validation_loader = DataLoader(
         GsiPaddyDataset(validation_samples), batch_size=args.batch_size, shuffle=False,
-        num_workers=0, collate_fn=collate_padded,
+        num_workers=0, collate_fn=collate_preservation if preserving else collate_padded,
     )
     try:
-        for epoch in range(1, args.epochs + 1):
-            training = run_epoch(model, train_loader, device, optimizer)
-            validation = run_epoch(model, validation_loader, device)
+        if args.preflight:
+            # Full dataset/split/checkpoint audit above, one forward batch per split.
+            # No optimizer step and no checkpoint; exercise the actual objective.
+            manifest["preflight_metrics"] = {
+                "train_sample": epoch_runner(model, islice(train_loader, 1), device),
+                "validation_sample": epoch_runner(model, islice(validation_loader, 1), device),
+            }
+            manifest.update(status="preflight_passed")
+            print("Preflight passed: full audit, one forward batch per split; no training.", flush=True)
+            return run_dir
+        for epoch in range(1, epochs + 1):
+            training = epoch_runner(model, islice(train_loader, 1) if args.smoke_test else train_loader,
+                                    device, optimizer)
+            validation = epoch_runner(model, islice(validation_loader, 1) if args.smoke_test else validation_loader,
+                                      device)
             relative = f"checkpoints/epoch_{epoch:03d}.pth"
             save_checkpoint(run_dir / relative, model)
             metric = {"epoch": epoch, "training": training, "validation": validation,
@@ -259,12 +299,13 @@ def train(args) -> Path:
                 manifest.update(best_checkpoint="checkpoints/best.pth", best_epoch=epoch,
                                 best_validation_loss=validation["loss"])
             write_json(manifest_path, manifest)
-            print(f"Epoch {epoch}/{args.epochs}: train loss={training['loss']:.6f}, "
+            print(f"Epoch {epoch}/{epochs}: train loss={training['loss']:.6f}, "
                   f"validation loss={validation['loss']:.6f}, labeled pixels="
                   f"{validation['labeled_pixel_count']}, class-7 agreement="
                   f"{validation['class_7_labeled_pixel_agreement_recall']:.6f}", flush=True)
         shutil.copyfile(run_dir / relative, run_dir / "checkpoints/final.pth")
-        manifest.update(final_checkpoint="checkpoints/final.pth", status="completed")
+        manifest.update(final_checkpoint="checkpoints/final.pth",
+                        status="smoke_test_completed" if args.smoke_test else "completed")
     except BaseException as exc:
         manifest.update(status="failed", failure_type=type(exc).__name__)
         raise
@@ -279,14 +320,22 @@ def make_parser():
     parser.add_argument("--org-dir", type=Path, required=True, help="GSI raw paddy_572/org directory")
     parser.add_argument("--prepared-dir", type=Path, required=True, help="contains labels/ and manifest.json")
     parser.add_argument("--base-model", type=Path, default=default_model_path())
+    parser.add_argument("--base-sha256", help="optional expected SHA256 of the original Base; checked before load")
     parser.add_argument("--output-dir", type=Path, default=Path("runs/gsi_phase_a"))
     parser.add_argument("--train-ratio", type=float, default=0.8)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--training-mode", choices=("positive_only", "base_preservation"), default="positive_only")
+    parser.add_argument("--lambda-preserve", type=float, default=1.0)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="default: positive_only=3 (v0.1 unchanged), base_preservation=1")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--device", choices=("cpu", "cuda", "auto"), default="cpu")
     parser.add_argument("--num-threads", type=int, default=2, help="CPU intra-op threads (default: 2)")
+    checks = parser.add_mutually_exclusive_group()
+    checks.add_argument("--preflight", action="store_true", help="audit all inputs, forward one batch per split; no training")
+    checks.add_argument("--smoke-test", action="store_true", help="one training step + one validation batch; use --epochs 1")
     return parser
 
 

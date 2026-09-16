@@ -1,5 +1,9 @@
 # GSI paddy Phase A fine-tuning Pilot
 
+この文書はv0.1 positive-only（CLI既定）の仕様です。unknownにBase teacherのKLを加える
+明示的なv0.2モード、preflight / 1-step smoke / 1 epoch Pilotについては
+[Base-Preservation Fine-tuning v0.2](BASE_PRESERVATION_FINETUNING.md)を参照してください。
+
 目的は `Base model → GSI paddy partial-label fine-tuning → checkpoint` を
 再現可能・監査可能な形で一度成立させることです。production modelの作成や、
 精度向上の証明は目的としません。SACLAJによるBase vs Fine-tuned評価は別工程です。

@@ -100,6 +100,10 @@ Raw推論と後処理を分離することで、モデル性能とGIS後処理�
 GSI部分教師データの準備と監査については
 `docs/GSI_TRAINING_DATA.md` を参照してください。
 
+GSI Phase Aのunknown領域にBase teacherのKL preservationを加える任意モードは
+[Base-Preservation Fine-tuning v0.2](docs/BASE_PRESERVATION_FINETUNING.md)を参照してください。
+元Baseから再スタートする1 epoch Pilotで、既定のv0.1 positive-only動作は維持します。
+
 GSI paddy Phase AのBase / fine-tuned checkpointを、SACLAJの独立した地点referenceで
 paired比較するCLIは [SACLAJ Evaluation v0.1](docs/SACLAJ_EVALUATION.md) を参照してください。
 Category_ID単位の確定mappingを同梱しています。templateへ配布READMEのSHA256を記入し、
