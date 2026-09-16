@@ -110,6 +110,10 @@ Category_ID単位の確定mappingを同梱しています。templateへ配布REA
 まずoffline preflightを実行します。Category_detailは補足情報としてのみ扱います。
 SACLAJの実CSV・座標・地点ID・地点別結果はリポジトリ外の会社PCローカル限定です。
 
+manual GTなしで実施したteacher preparation → fine-tuning → independent SACLAJ evaluationの
+一区切りは、[Phase A Minimal End-to-End 実験記録](docs/PHASE_A_MINIMAL_E2E_SUMMARY.md)に
+まとめています。これはproduction modelの成果報告ではありません。
+
 ## Model / license note
 
 現行weightはOpenEarthMap-SARの公開pretrained modelをPoC baselineとして利用しています。
