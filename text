@@ -1,11 +1,11 @@
-python -m src.training.train_gsi_paddy ^
-  --org-dir C:\OpenEarthMap_PoC\data\gsi\raw\paddy_572\org ^
-  --prepared-dir C:\OpenEarthMap_PoC\data\gsi\prepared\paddy_572 ^
+python -m src.evaluation.evaluate_saclaj ^
+  --saclaj-csv C:\OpenEarthMap_PoC\data\saclaj\raw\Gref_DB_2025_06.csv ^
+  --mapping C:\OpenEarthMap_PoC\data\saclaj\saclaj_mapping.v0.1.json ^
   --base-model C:\OpenEarthMap_PoC\OpenEarthMap-SAR\src\Semantic_Segemtation\pretrained\RGB_Real_5_u-efficientnet-b4.pth ^
-  --output-dir C:\OpenEarthMap_PoC\training_outputs\gsi_phase_a ^
+  --fine-tuned-model C:\OpenEarthMap_PoC\training_outputs\gsi_phase_a\20260916T012118_979625Z_69c3fa24\checkpoints\best.pth ^
+  --output-dir C:\OpenEarthMap_PoC\data\saclaj\results ^
   --device cpu ^
-  --batch-size 1 ^
   --num-threads 2 ^
-  --epochs 1 ^
+  --max-samples-per-category 100 ^
   --seed 42 ^
-  --train-ratio 0.8
+  --preflight
