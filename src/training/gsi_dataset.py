@@ -109,3 +109,12 @@ def collate_padded(batch):
         images.append(F.pad(rgb, padding, mode="replicate"))
         labels.append(F.pad(label, padding, value=IGNORE_INDEX))
     return torch.stack(images), torch.stack(labels)
+
+
+def collate_preservation(batch):
+    """Keep v0.1 padding, distinguishing real unknowns from synthetic padding."""
+    images, labels = collate_padded(batch)
+    image_mask = torch.zeros_like(labels, dtype=torch.bool)
+    for index, (_, label) in enumerate(batch):
+        image_mask[index, :label.shape[0], :label.shape[1]] = True
+    return images, labels, image_mask
