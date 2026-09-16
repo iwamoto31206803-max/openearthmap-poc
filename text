@@ -1,47 +1,11 @@
-from pathlib import Path
-import torch
-
-from src.model import build_model
-from src.training.gsi_dataset import (
-    scan_dataset,
-    GsiPaddyDataset,
-    collate_padded,
-)
-from src.training.train_gsi_paddy import (
-    freeze_encoder,
-    make_optimizer,
-    run_epoch,
-)
-
-base = Path(r"C:\OpenEarthMap_PoC\OpenEarthMap-SAR\src\Semantic_Segemtation\pretrained\RGB_Real_5_u-efficientnet-b4.pth")
-org = Path(r"C:\OpenEarthMap_PoC\data\gsi\raw\paddy_572\org")
-labels = Path(r"C:\OpenEarthMap_PoC\data\gsi\prepared\paddy_572\labels")
-
-usable, excluded = scan_dataset(org, labels)
-
-sample = usable[0]
-dataset = GsiPaddyDataset([sample])
-image, label = dataset[0]
-images, labels_batch = collate_padded([(image, label)])
-
-print("sample_id =", sample.source_image_id)
-print("input_shape =", tuple(images.shape))
-print("label_shape =", tuple(labels_batch.shape))
-print("labeled_pixels =", int((labels_batch != 255).sum()))
-
-model = build_model(base, device="cpu")
-counts = freeze_encoder(model)
-optimizer = make_optimizer(model, 1e-4)
-
-print("frozen =", counts["frozen"])
-print("trainable =", counts["trainable"])
-
-metrics = run_epoch(
-    model,
-    [(images, labels_batch)],
-    "cpu",
-    optimizer,
-)
-
-print("SMOKE TRAINING OK")
-print(metrics)
+python -m src.training.train_gsi_paddy ^
+  --org-dir C:\OpenEarthMap_PoC\data\gsi\raw\paddy_572\org ^
+  --prepared-dir C:\OpenEarthMap_PoC\data\gsi\prepared\paddy_572 ^
+  --base-model C:\OpenEarthMap_PoC\OpenEarthMap-SAR\src\Semantic_Segemtation\pretrained\RGB_Real_5_u-efficientnet-b4.pth ^
+  --output-dir C:\OpenEarthMap_PoC\training_outputs\gsi_phase_a ^
+  --device cpu ^
+  --batch-size 1 ^
+  --num-threads 2 ^
+  --epochs 1 ^
+  --seed 42 ^
+  --train-ratio 0.8
