@@ -100,6 +100,12 @@ Raw推論と後処理を分離することで、モデル性能とGIS後処理�
 GSI部分教師データの準備と監査については
 `docs/GSI_TRAINING_DATA.md` を参照してください。
 
+GSI paddy Phase AのBase / fine-tuned checkpointを、SACLAJの独立した地点referenceで
+paired比較するCLIは [SACLAJ Evaluation v0.1](docs/SACLAJ_EVALUATION.md) を参照してください。
+Category_ID単位の確定mappingを同梱しています。templateへ配布READMEのSHA256を記入し、
+まずoffline preflightを実行します。Category_detailは補足情報としてのみ扱います。
+SACLAJの実CSV・座標・地点ID・地点別結果はリポジトリ外の会社PCローカル限定です。
+
 ## Model / license note
 
 現行weightはOpenEarthMap-SARの公開pretrained modelをPoC baselineとして利用しています。

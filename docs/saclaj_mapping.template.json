@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "mapping_version": "saclaj-25.06-evaluation-0.1-category-id",
+  "definition_verified": true,
+  "definition_source": "SACLAJ Reference Dataset ver.25.06 README; Category_ID definitions verified in user review",
+  "definition_sha256": "",
+  "entries": [
+    {"category_id": "8", "subtype": null},
+    {"category_id": "9", "subtype": "rice_paddy"},
+    {"category_id": "10", "subtype": null},
+    {"category_id": "11", "subtype": "other_crop"},
+    {"category_id": "17", "subtype": null},
+    {"category_id": "18", "subtype": "mixed"},
+    {"category_id": "19", "subtype": "needleleaf"},
+    {"category_id": "20", "subtype": "broadleaf"},
+    {"category_id": "22", "subtype": "needleleaf_evergreen"},
+    {"category_id": "23", "subtype": "broadleaf_evergreen"},
+    {"category_id": "27", "subtype": "needleleaf_deciduous"},
+    {"category_id": "28", "subtype": "broadleaf_deciduous"},
+    {"category_id": "32", "subtype": null},
+    {"category_id": "33", "subtype": "water"}
+  ]
+}
