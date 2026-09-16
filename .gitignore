@@ -223,6 +223,10 @@ __marimo__/
 
 # Run outputs
 runs/
+training_outputs/
+
+# Local datasets and audits (including GSI prepared manifests)
+data/
 
 # Generated output directories from exploratory / legacy scripts
 outputs/

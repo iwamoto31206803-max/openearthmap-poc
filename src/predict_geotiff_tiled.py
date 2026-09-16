@@ -4,51 +4,25 @@ import argparse
 import numpy as np
 import rasterio
 import torch
-import segmentation_models_pytorch as smp
 
-from config import (
-    CLASS_COLORS,
-    CLASS_NAMES,
-    DEFAULT_OVERLAP,
-    INFERENCE_TILE_SIZE,
-    default_model_path,
-)
+if __package__:
+    from .model import build_model as _build_model, rgb_to_tensor
+    from . import config
+else:
+    from model import build_model as _build_model, rgb_to_tensor
+    import config
+
+CLASS_COLORS = config.CLASS_COLORS
+CLASS_NAMES = config.CLASS_NAMES
+DEFAULT_OVERLAP = config.DEFAULT_OVERLAP
+INFERENCE_TILE_SIZE = config.INFERENCE_TILE_SIZE
+default_model_path = config.default_model_path
 
 TILE_SIZE = INFERENCE_TILE_SIZE
 DEVICE = "cpu"
 
 def build_model(model_path: Path) -> torch.nn.Module:
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model file not found: {model_path}")
-
-    model = smp.Unet(
-        encoder_name="efficientnet-b4",
-        encoder_weights=None,
-        in_channels=3,
-        classes=9,
-        activation=None,
-        decoder_attention_type="scse",
-    )
-
-    try:
-        checkpoint = torch.load(
-            model_path,
-            map_location=DEVICE,
-            weights_only=True,
-        )
-    except TypeError:
-        checkpoint = torch.load(
-            model_path,
-            map_location=DEVICE,
-        )
-
-    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        checkpoint = checkpoint["state_dict"]
-
-    model.load_state_dict(checkpoint)
-    model.to(DEVICE)
-    model.eval()
-    return model
+    return _build_model(model_path, device=DEVICE)
 
 
 def make_starts(length: int, tile_size: int, stride: int):
@@ -79,9 +53,7 @@ def pad_tile(tile: np.ndarray, tile_size: int):
 
 
 def image_to_tensor(tile: np.ndarray) -> torch.Tensor:
-    array = tile.astype(np.float32) / 255.0
-    array = np.transpose(array, (2, 0, 1))
-    return torch.from_numpy(array).unsqueeze(0).to(DEVICE)
+    return rgb_to_tensor(tile).unsqueeze(0).to(DEVICE)
 
 
 def predict_tiled(image: np.ndarray, model: torch.nn.Module, overlap: int):

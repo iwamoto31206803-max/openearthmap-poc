@@ -1,5 +1,8 @@
 # GSI 部分教師データの準備
 
+準備済みのGSI paddy partial labelsを使用するPhase A fine-tuning Pilotは
+[GSI_PHASE_A_TRAINING.md](GSI_PHASE_A_TRAINING.md) を参照してください。
+
 W1 第1段階では、同じ相対パスにある `org/`（原画像）と `val/`（着色画像）の
 PNGを対応付け、OEM8形式の部分教師ラベルと監査結果を生成します。
 
