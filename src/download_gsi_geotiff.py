@@ -9,7 +9,10 @@ from PIL import Image
 import rasterio
 from rasterio.transform import from_bounds
 
-from config import GSI_SOURCE_NAME, GSI_SOURCE_NAME_JP, GSI_TILE_SIZE, GSI_TILE_URL
+if __package__:
+    from .config import GSI_SOURCE_NAME, GSI_SOURCE_NAME_JP, GSI_TILE_SIZE, GSI_TILE_URL
+else:
+    from config import GSI_SOURCE_NAME, GSI_SOURCE_NAME_JP, GSI_TILE_SIZE, GSI_TILE_URL
 
 TILE_SIZE = GSI_TILE_SIZE
 WEB_MERCATOR_RADIUS = 6378137.0

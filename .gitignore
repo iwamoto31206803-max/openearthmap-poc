@@ -224,6 +224,12 @@ __marimo__/
 # Run outputs
 runs/
 training_outputs/
+evaluation_outputs/
+saclaj/
+Gref_DB*.csv
+site_results.csv
+evaluation_manifest.json
+aggregate_summary.json
 
 # Local datasets and audits (including GSI prepared manifests)
 data/
