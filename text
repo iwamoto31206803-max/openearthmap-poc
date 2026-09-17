@@ -1,54 +1,24 @@
 from pathlib import Path
+from collections import Counter, defaultdict
 import csv
-import hashlib
-import json
-import subprocess
+import math
 
 
 # ============================================================
-# OpenEarthMap Phase A Minimal E2E
-# Evidence Closure / Evaluation Input Identity Check
+# OpenEarthMap Phase A
+# Water degradation diagnosis from EXISTING SACLAJ results only
 #
 # IMPORTANT:
-# - This script only READS local files.
-# - It does not modify manifests, checkpoints, results, or repository files.
-# - SACLAJ site IDs / coordinates are used locally for matching but are NOT printed.
+# - READ ONLY
+# - No new model inference
+# - No network access
+# - No training
+# - No SACLAJ IDs / coordinates / site-level rows are printed
 # ============================================================
 
 
 ROOT = Path(r"C:\OpenEarthMap_PoC")
 
-# ---- Training runs ----
-V01_TRAIN = (
-    ROOT
-    / "training_outputs"
-    / "gsi_phase_a"
-    / "20260916T012118_979625Z_69c3fa24"
-)
-
-V02_PREFLIGHT_ROOT = (
-    ROOT
-    / "training_outputs"
-    / "gsi_phase_a_v02"
-    / "preflight"
-)
-
-V02_SMOKE_ROOT = (
-    ROOT
-    / "training_outputs"
-    / "gsi_phase_a_v02"
-    / "smoke"
-)
-
-V02_TRAIN = (
-    ROOT
-    / "training_outputs"
-    / "gsi_phase_a_v02"
-    / "pilot"
-    / "20260916T130118_489262Z_4a19e066"
-)
-
-# ---- SACLAJ evaluation runs ----
 V01_EVAL = (
     ROOT
     / "data"
@@ -65,121 +35,41 @@ V02_EVAL = (
     / "20260916T135520_362028Z_4a047f8d"
 )
 
-# ---- Original Base ----
-BASE = (
-    ROOT
-    / "OpenEarthMap-SAR"
-    / "src"
-    / "Semantic_Segemtation"
-    / "pretrained"
-    / "RGB_Real_5_u-efficientnet-b4.pth"
-)
-
-REPO = ROOT / "openearthmap-poc"
+V01_CSV = V01_EVAL / "site_results.csv"
+V02_CSV = V02_EVAL / "site_results.csv"
 
 
-def sha256(path: Path):
-    if not path.exists() or not path.is_file():
-        return None
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def load_json(path: Path):
-    if not path.exists():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def latest_child(root: Path):
-    if not root.exists():
-        return None
-    dirs = [p for p in root.iterdir() if p.is_dir()]
-    if not dirs:
-        return None
-    return sorted(dirs, key=lambda p: p.name)[-1]
-
-
-def short_hash(value):
-    if not value:
-        return "MISSING"
-    return value[:12] + "..."
-
-
-def boolstr(x):
-    return "PASS" if x else "FAIL"
+CLASS_NAMES = {
+    0: "Background / Unlabelled",
+    1: "Bareland",
+    2: "Grass / Rangeland",
+    3: "Pavement / Developed space",
+    4: "Road",
+    5: "Tree",
+    6: "Water",
+    7: "Cropland / Agriculture",
+    8: "Buildings",
+}
 
 
 def heading(text):
     print()
-    print("=" * 72)
+    print("=" * 76)
     print(text)
-    print("=" * 72)
+    print("=" * 76)
 
 
-def check_exists(name, path):
-    ok = path.exists()
-    print(f"{name:30s}: {boolstr(ok)}")
-    if not ok:
-        print(f"  missing path: {path}")
-    return ok
-
-
-def manifest_summary(name, run_dir, manifest_name="run_manifest.json"):
-    path = run_dir / manifest_name
-    data = load_json(path)
-
-    print()
-    print(f"[{name}]")
-
-    if data is None:
-        print("manifest: MISSING")
-        return None
-
-    print(f"run_id              : {data.get('run_id', 'NOT RECORDED')}")
-    print(f"status              : {data.get('status', 'NOT RECORDED')}")
-    print(f"training_mode       : {data.get('training_mode', 'N/A')}")
-    print(f"seed                : {data.get('seed', data.get('sampling_seed', 'N/A'))}")
-    print(f"train_count         : {data.get('train_count', 'N/A')}")
-    print(f"validation_count    : {data.get('validation_count', 'N/A')}")
-    print(f"excluded_all_ignore : {data.get('excluded_all_ignore_images', 'N/A')}")
-
-    base_hash = (
-        data.get("base_model_sha256")
-        or data.get("base_checkpoint_sha256")
-    )
-    print(f"Base SHA256         : {short_hash(base_hash)}")
-
-    return data
-
-
-def file_hash_compare(label, p1, p2):
-    h1 = sha256(p1)
-    h2 = sha256(p2)
-    ok = h1 is not None and h2 is not None and h1 == h2
-    print(f"{label:30s}: {boolstr(ok)}")
-    print(f"  v0.1: {short_hash(h1)}")
-    print(f"  v0.2: {short_hash(h2)}")
-    return ok
-
-
-def load_site_rows(path: Path):
-    rows = []
+def load_rows(path: Path):
     if not path.exists():
-        return rows
+        raise FileNotFoundError(path)
 
     with path.open("r", encoding="utf-8-sig", newline="") as f:
-        for row in csv.DictReader(f):
-            rows.append(row)
-    return rows
+        return list(csv.DictReader(f))
 
 
 def site_key(row):
-    # Sensitive fields are used ONLY locally for exact pairing.
-    # They are never printed.
+    # Sensitive values used ONLY locally for exact pairing.
+    # Never printed.
     return (
         row.get("ID", ""),
         row.get("Latitude", ""),
@@ -190,488 +80,466 @@ def site_key(row):
     )
 
 
-def successful_map(rows):
-    result = {}
-    for row in rows:
-        if row.get("status") == "success":
-            result[site_key(row)] = row
-    return result
+def success_map(rows):
+    return {
+        site_key(r): r
+        for r in rows
+        if r.get("status") == "success"
+    }
 
 
-def all_site_keys(rows):
-    return {site_key(r) for r in rows}
+def to_int(value):
+    return int(float(value))
+
+
+def to_float(value):
+    if value in (None, ""):
+        return math.nan
+    return float(value)
+
+
+def fmt_prob(value):
+    if math.isnan(value):
+        return "N/A"
+    return f"{value:.4f}"
+
+
+def mean(values):
+    values = [v for v in values if not math.isnan(v)]
+    if not values:
+        return math.nan
+    return sum(values) / len(values)
+
+
+def class_name(class_id):
+    return CLASS_NAMES.get(class_id, f"Unknown class {class_id}")
 
 
 # ============================================================
-# 0. Path existence
+# 0. Load / pair
 # ============================================================
 
-heading("0. REQUIRED LOCAL ARTIFACTS")
+heading("0. LOAD EXISTING SACLAJ RESULTS")
 
-check_exists("v0.1 training run", V01_TRAIN)
-check_exists("v0.2 training run", V02_TRAIN)
-check_exists("v0.1 evaluation run", V01_EVAL)
-check_exists("v0.2 evaluation run", V02_EVAL)
-check_exists("Original Base", BASE)
+rows1 = load_rows(V01_CSV)
+rows2 = load_rows(V02_CSV)
 
-V02_PREFLIGHT = latest_child(V02_PREFLIGHT_ROOT)
-V02_SMOKE = latest_child(V02_SMOKE_ROOT)
+m1 = success_map(rows1)
+m2 = success_map(rows2)
 
-print(f"{'v0.2 preflight run':30s}: {'PASS' if V02_PREFLIGHT else 'FAIL'}")
-print(f"{'v0.2 smoke run':30s}: {'PASS' if V02_SMOKE else 'FAIL'}")
+common = set(m1) & set(m2)
+
+print(f"v0.1 successful rows     : {len(m1)}")
+print(f"v0.2 successful rows     : {len(m2)}")
+print(f"common successful rows   : {len(common)}")
+
+if len(common) != 1000:
+    print("WARNING: expected 1000 common successful sites.")
 
 
 # ============================================================
-# 1. Current repository state
+# 1. Select Water reference points
 # ============================================================
 
-heading("1. CURRENT REPOSITORY STATE")
+heading("1. WATER REFERENCE SUBSET")
 
-try:
-    head = subprocess.check_output(
-        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
-        text=True,
-    ).strip()
-    print(f"current git HEAD      : {head}")
-except Exception:
-    print("current git HEAD      : COULD NOT READ")
+water_keys = [
+    key
+    for key in common
+    if m2[key].get("subtype") == "water"
+    and to_int(m2[key].get("expected_class", "-1")) == 6
+]
 
+print(f"Water reference sites    : {len(water_keys)}")
+
+if len(water_keys) != 100:
+    print("WARNING: expected 100 Water reference sites.")
+
+
+# ============================================================
+# 2. Sanity: Base predictions must match across evaluation runs
+# ============================================================
+
+heading("2. BASE PREDICTION IDENTITY ACROSS v0.1 / v0.2 EVALUATION RUNS")
+
+base_prediction_mismatch = 0
+base_expected_prob_diffs = []
+base_agri_prob_diffs = []
+
+for key in water_keys:
+    a = m1[key]
+    b = m2[key]
+
+    pred1 = to_int(a["base_predicted_class"])
+    pred2 = to_int(b["base_predicted_class"])
+
+    if pred1 != pred2:
+        base_prediction_mismatch += 1
+
+    p1 = to_float(a["base_expected_probability"])
+    p2 = to_float(b["base_expected_probability"])
+    a1 = to_float(a["base_agriculture_probability"])
+    a2 = to_float(b["base_agriculture_probability"])
+
+    base_expected_prob_diffs.append(abs(p1 - p2))
+    base_agri_prob_diffs.append(abs(a1 - a2))
+
+print(f"Base argmax mismatches   : {base_prediction_mismatch}")
 print(
-    "NOTE: current HEAD does NOT prove the exact commit used for historical runs "
-    "because git commit SHA was not stored in those manifests."
+    "max |Base Water prob diff| : "
+    f"{max(base_expected_prob_diffs) if base_expected_prob_diffs else math.nan:.12g}"
 )
-
-
-# ============================================================
-# 2. Run manifests / status
-# ============================================================
-
-heading("2. RUN MANIFEST STATUS")
-
-m_v01 = manifest_summary("v0.1 Pilot", V01_TRAIN)
-
-m_pre = None
-if V02_PREFLIGHT:
-    m_pre = manifest_summary("v0.2 Preflight", V02_PREFLIGHT)
-
-m_smoke = None
-if V02_SMOKE:
-    m_smoke = manifest_summary("v0.2 Smoke", V02_SMOKE)
-
-m_v02 = manifest_summary("v0.2 Pilot", V02_TRAIN)
-
-e_v01 = manifest_summary(
-    "SACLAJ Base/v0.1",
-    V01_EVAL,
-    "evaluation_manifest.json",
-)
-
-e_v02 = manifest_summary(
-    "SACLAJ Base/v0.2",
-    V02_EVAL,
-    "evaluation_manifest.json",
-)
-
-
-# ============================================================
-# 3. Original Base identity
-# ============================================================
-
-heading("3. ORIGINAL BASE IDENTITY")
-
-actual_base_hash = sha256(BASE)
-print(f"actual Base SHA256     : {actual_base_hash}")
-
-checks = []
-
-if m_v01:
-    h = m_v01.get("base_model_sha256")
-    ok = h == actual_base_hash
-    checks.append(ok)
-    print(f"v0.1 training Base     : {boolstr(ok)}")
-
-if m_v02:
-    h = m_v02.get("base_model_sha256")
-    ok = h == actual_base_hash
-    checks.append(ok)
-    print(f"v0.2 training Base     : {boolstr(ok)}")
-
-if e_v01:
-    h = e_v01.get("base_checkpoint_sha256")
-    ok = h == actual_base_hash
-    checks.append(ok)
-    print(f"v0.1 eval Base         : {boolstr(ok)}")
-
-if e_v02:
-    h = e_v02.get("base_checkpoint_sha256")
-    ok = h == actual_base_hash
-    checks.append(ok)
-    print(f"v0.2 eval Base         : {boolstr(ok)}")
-
-print(f"Base identity overall  : {boolstr(all(checks) if checks else False)}")
-
-
-# ============================================================
-# 4. Evaluation FT checkpoint identity
-# ============================================================
-
-heading("4. PILOT CHECKPOINT <-> EVALUATION IDENTITY")
-
-v01_best = V01_TRAIN / "checkpoints" / "best.pth"
-v02_best = V02_TRAIN / "checkpoints" / "best.pth"
-
-v01_best_hash = sha256(v01_best)
-v02_best_hash = sha256(v02_best)
-
-print(f"v0.1 best.pth SHA256   : {v01_best_hash}")
-print(f"v0.2 best.pth SHA256   : {v02_best_hash}")
-
-if e_v01:
-    eval_hash = e_v01.get("fine_tuned_checkpoint_sha256")
-    print(
-        "v0.1 eval uses Pilot   : "
-        + boolstr(eval_hash == v01_best_hash)
-    )
-
-if e_v02:
-    eval_hash = e_v02.get("fine_tuned_checkpoint_sha256")
-    print(
-        "v0.2 eval uses Pilot   : "
-        + boolstr(eval_hash == v02_best_hash)
-    )
-
-
-# Explicitly ensure v0.2 smoke checkpoint was NOT used
-if V02_SMOKE:
-    smoke_best = V02_SMOKE / "checkpoints" / "best.pth"
-    smoke_hash = sha256(smoke_best)
-
-    if e_v02:
-        eval_hash = e_v02.get("fine_tuned_checkpoint_sha256")
-        ok = smoke_hash is not None and eval_hash != smoke_hash
-        print(f"v0.2 eval NOT smoke    : {boolstr(ok)}")
-        print(f"smoke best SHA         : {short_hash(smoke_hash)}")
-
-
-# ============================================================
-# 5. Dataset / split identity
-# ============================================================
-
-heading("5. v0.1 <-> v0.2 DATASET / SPLIT IDENTITY")
-
-file_hash_compare(
-    "train_ids.json",
-    V01_TRAIN / "train_ids.json",
-    V02_TRAIN / "train_ids.json",
-)
-
-file_hash_compare(
-    "validation_ids.json",
-    V01_TRAIN / "validation_ids.json",
-    V02_TRAIN / "validation_ids.json",
-)
-
-# dataset inventory may exist under this name
-inv1 = V01_TRAIN / "dataset_inventory.csv"
-inv2 = V02_TRAIN / "dataset_inventory.csv"
-
-if inv1.exists() and inv2.exists():
-    file_hash_compare("dataset_inventory.csv", inv1, inv2)
-else:
-    print("dataset_inventory.csv         : NOT BOTH PRESENT")
-
-if m_v01 and m_v02:
-    comparable_fields = [
-        "seed",
-        "train_count",
-        "validation_count",
-        "excluded_all_ignore_images",
-        "train_ratio_requested",
-        "train_ratio_actual",
-    ]
-
-    for field in comparable_fields:
-        a = m_v01.get(field)
-        b = m_v02.get(field)
-        print(
-            f"{field:30s}: "
-            f"{boolstr(a == b)}  "
-            f"(v0.1={a}, v0.2={b})"
-        )
-
-
-# ============================================================
-# 6. Evaluation configuration identity
-# ============================================================
-
-heading("6. SACLAJ EVALUATION CONFIGURATION IDENTITY")
-
-if e_v01 and e_v02:
-    eval_fields = [
-        "saclaj_csv_sha256",
-        "category_mapping_sha256",
-        "category_definition_sha256",
-        "sampling_seed",
-        "max_samples_per_category",
-        "sampling_method",
-        "gsi_imagery_source",
-    ]
-
-    for field in eval_fields:
-        a = e_v01.get(field)
-        b = e_v02.get(field)
-        print(
-            f"{field:30s}: "
-            f"{boolstr(a == b)}"
-        )
-
-    print(
-        f"{'v0.1 eval status':30s}: "
-        f"{e_v01.get('status')}"
-    )
-    print(
-        f"{'v0.2 eval status':30s}: "
-        f"{e_v02.get('status')}"
-    )
-
-    print(
-        f"{'v0.1 outcomes':30s}: "
-        f"{e_v01.get('outcomes')}"
-    )
-    print(
-        f"{'v0.2 outcomes':30s}: "
-        f"{e_v02.get('outcomes')}"
-    )
-
-
-# ============================================================
-# 7. SACLAJ sampled / successful site identity
-# ============================================================
-
-heading("7. SACLAJ SITE SET IDENTITY")
-
-rows1 = load_site_rows(V01_EVAL / "site_results.csv")
-rows2 = load_site_rows(V02_EVAL / "site_results.csv")
-
-print(f"v0.1 rows              : {len(rows1)}")
-print(f"v0.2 rows              : {len(rows2)}")
-
-sites1 = all_site_keys(rows1)
-sites2 = all_site_keys(rows2)
-
-print(f"sampled site set same  : {boolstr(sites1 == sites2)}")
-print(f"only in v0.1           : {len(sites1 - sites2)}")
-print(f"only in v0.2           : {len(sites2 - sites1)}")
-
-success1 = successful_map(rows1)
-success2 = successful_map(rows2)
-
-success_keys1 = set(success1)
-success_keys2 = set(success2)
-
-print(f"v0.1 successful sites  : {len(success_keys1)}")
-print(f"v0.2 successful sites  : {len(success_keys2)}")
 print(
-    f"successful set same    : "
-    f"{boolstr(success_keys1 == success_keys2)}"
+    "max |Base Agri prob diff|  : "
+    f"{max(base_agri_prob_diffs) if base_agri_prob_diffs else math.nan:.12g}"
 )
-print(f"success only v0.1      : {len(success_keys1 - success_keys2)}")
-print(f"success only v0.2      : {len(success_keys2 - success_keys1)}")
+
+base_identity_pass = (
+    base_prediction_mismatch == 0
+    and max(base_expected_prob_diffs, default=0) < 1e-12
+    and max(base_agri_prob_diffs, default=0) < 1e-12
+)
+
+print(f"Base inference identity  : {'PASS' if base_identity_pass else 'FAIL'}")
 
 
 # ============================================================
-# 8. GSI patch identity between evaluation runs
+# 3. Overall predictions on Water reference points
 # ============================================================
 
-heading("8. GSI PATCH SHA256 IDENTITY")
+heading("3. WATER REFERENCE: TOP-1 PREDICTION DISTRIBUTION")
 
-common = success_keys1 & success_keys2
+base_counts = Counter()
+v01_counts = Counter()
+v02_counts = Counter()
 
-same_patch = 0
-different_patch = 0
-missing_hash = 0
+for key in water_keys:
+    r1 = m1[key]
+    r2 = m2[key]
 
-for key in common:
-    h1 = success1[key].get("patch_sha256", "")
-    h2 = success2[key].get("patch_sha256", "")
+    base_counts[to_int(r2["base_predicted_class"])] += 1
+    v01_counts[to_int(r1["fine_tuned_predicted_class"])] += 1
+    v02_counts[to_int(r2["fine_tuned_predicted_class"])] += 1
 
-    if not h1 or not h2:
-        missing_hash += 1
-    elif h1 == h2:
-        same_patch += 1
+
+print("Class                         Base   v0.1   v0.2")
+print("-" * 55)
+
+for cid in range(9):
+    print(
+        f"{cid}: {class_name(cid):28s} "
+        f"{base_counts[cid]:4d}   {v01_counts[cid]:4d}   {v02_counts[cid]:4d}"
+    )
+
+print()
+print(f"Base Water agreement     : {base_counts[6]} / {len(water_keys)}")
+print(f"v0.1 Water agreement     : {v01_counts[6]} / {len(water_keys)}")
+print(f"v0.2 Water agreement     : {v02_counts[6]} / {len(water_keys)}")
+
+
+# ============================================================
+# 4. Base -> v0.2 paired transition
+# ============================================================
+
+heading("4. PAIRED TRANSITION: BASE -> v0.2 ON WATER REFERENCE")
+
+transition = Counter()
+
+for key in water_keys:
+    r = m2[key]
+
+    base_pred = to_int(r["base_predicted_class"])
+    v02_pred = to_int(r["fine_tuned_predicted_class"])
+
+    transition[(base_pred, v02_pred)] += 1
+
+
+print("From Base                     -> To v0.2                     Count")
+print("-" * 72)
+
+for (src, dst), count in sorted(
+    transition.items(),
+    key=lambda x: (-x[1], x[0][0], x[0][1]),
+):
+    print(
+        f"{src}: {class_name(src):27s} -> "
+        f"{dst}: {class_name(dst):27s} {count:3d}"
+    )
+
+
+# ============================================================
+# 5. Focus: Base-correct Water -> v0.2
+# ============================================================
+
+heading("5. BASE-CORRECT WATER SITES: WHERE DID v0.2 MOVE?")
+
+base_correct_keys = [
+    key
+    for key in water_keys
+    if to_int(m2[key]["base_predicted_class"]) == 6
+]
+
+print(f"Base-correct Water sites : {len(base_correct_keys)}")
+
+destination = Counter(
+    to_int(m2[key]["fine_tuned_predicted_class"])
+    for key in base_correct_keys
+)
+
+for cid, count in sorted(destination.items(), key=lambda x: (-x[1], x[0])):
+    pct = 100 * count / len(base_correct_keys) if base_correct_keys else 0
+
+    print(
+        f"{cid}: {class_name(cid):28s} "
+        f"{count:3d}  ({pct:5.1f}%)"
+    )
+
+
+retained = destination[6]
+lost = len(base_correct_keys) - retained
+
+print()
+print(f"Water retained           : {retained}")
+print(f"Water lost               : {lost}")
+
+if base_correct_keys:
+    print(
+        f"Water retention rate     : "
+        f"{100 * retained / len(base_correct_keys):.1f}%"
+    )
+
+
+# ============================================================
+# 6. Was Water mainly absorbed by Agriculture?
+# ============================================================
+
+heading("6. BASE-CORRECT WATER LOSS: AGRICULTURE VS OTHER CLASSES")
+
+water_to_agri = 0
+water_to_other = 0
+
+for key in base_correct_keys:
+    dst = to_int(m2[key]["fine_tuned_predicted_class"])
+
+    if dst == 6:
+        continue
+    elif dst == 7:
+        water_to_agri += 1
     else:
-        different_patch += 1
-
-print(f"common successful sites: {len(common)}")
-print(f"same patch SHA256       : {same_patch}")
-print(f"different patch SHA256  : {different_patch}")
-print(f"missing patch SHA256    : {missing_hash}")
-
-patch_identity_pass = (
-    len(common) > 0
-    and different_patch == 0
-    and missing_hash == 0
-    and len(common) == len(success_keys1)
-    and len(common) == len(success_keys2)
-)
-
-print(
-    f"evaluation input same   : "
-    f"{boolstr(patch_identity_pass)}"
-)
+        water_to_other += 1
 
 
-# ============================================================
-# 9. Subtype counts, without IDs / coordinates
-# ============================================================
+print(f"Base Water -> Agriculture: {water_to_agri}")
+print(f"Base Water -> other class: {water_to_other}")
 
-heading("9. SUCCESS COUNTS BY SUBTYPE")
-
-def subtype_counts(rows):
-    counts = {}
-    for row in rows:
-        if row.get("status") != "success":
-            continue
-        subtype = row.get("subtype", "UNKNOWN")
-        counts[subtype] = counts.get(subtype, 0) + 1
-    return counts
-
-
-c1 = subtype_counts(rows1)
-c2 = subtype_counts(rows2)
-
-all_subtypes = sorted(set(c1) | set(c2))
-
-for subtype in all_subtypes:
-    a = c1.get(subtype, 0)
-    b = c2.get(subtype, 0)
+if lost:
     print(
-        f"{subtype:28s}: "
-        f"v0.1={a:3d}  v0.2={b:3d}  {boolstr(a == b)}"
+        f"Agriculture share of Water loss: "
+        f"{100 * water_to_agri / lost:.1f}%"
     )
 
 
 # ============================================================
-# 10. Environment / provenance fields
+# 7. Probability shifts on ALL Water reference points
 # ============================================================
 
-heading("10. ENVIRONMENT / CODE PROVENANCE")
+heading("7. PROBABILITY SHIFT: ALL WATER REFERENCE SITES")
 
-if m_v01:
-    print("v0.1 versions:")
-    print(json.dumps(m_v01.get("versions"), ensure_ascii=False, indent=2))
+base_water_probs = []
+v01_water_probs = []
+v02_water_probs = []
 
-if m_v02:
-    print("v0.2 versions:")
-    print(json.dumps(m_v02.get("versions"), ensure_ascii=False, indent=2))
+base_agri_probs = []
+v01_agri_probs = []
+v02_agri_probs = []
 
-for name, manifest in [
-    ("v0.1 training", m_v01),
-    ("v0.2 training", m_v02),
-    ("v0.1 evaluation", e_v01),
-    ("v0.2 evaluation", e_v02),
-]:
-    if manifest is None:
+for key in water_keys:
+    r1 = m1[key]
+    r2 = m2[key]
+
+    base_water_probs.append(to_float(r2["base_expected_probability"]))
+    v01_water_probs.append(to_float(r1["fine_tuned_expected_probability"]))
+    v02_water_probs.append(to_float(r2["fine_tuned_expected_probability"]))
+
+    base_agri_probs.append(to_float(r2["base_agriculture_probability"]))
+    v01_agri_probs.append(to_float(r1["fine_tuned_agriculture_probability"]))
+    v02_agri_probs.append(to_float(r2["fine_tuned_agriculture_probability"]))
+
+
+print("Mean Water probability")
+print(f"  Base : {fmt_prob(mean(base_water_probs))}")
+print(f"  v0.1 : {fmt_prob(mean(v01_water_probs))}")
+print(f"  v0.2 : {fmt_prob(mean(v02_water_probs))}")
+
+print()
+print("Mean Agriculture probability")
+print(f"  Base : {fmt_prob(mean(base_agri_probs))}")
+print(f"  v0.1 : {fmt_prob(mean(v01_agri_probs))}")
+print(f"  v0.2 : {fmt_prob(mean(v02_agri_probs))}")
+
+
+# ============================================================
+# 8. Probability shifts only where Base was correct Water
+# ============================================================
+
+heading("8. PROBABILITY SHIFT: BASE-CORRECT WATER SITES ONLY")
+
+bw = []
+fw = []
+ba = []
+fa = []
+
+for key in base_correct_keys:
+    r = m2[key]
+
+    bw.append(to_float(r["base_expected_probability"]))
+    fw.append(to_float(r["fine_tuned_expected_probability"]))
+
+    ba.append(to_float(r["base_agriculture_probability"]))
+    fa.append(to_float(r["fine_tuned_agriculture_probability"]))
+
+
+print(f"n                         : {len(base_correct_keys)}")
+print(f"Base mean Water prob      : {fmt_prob(mean(bw))}")
+print(f"v0.2 mean Water prob      : {fmt_prob(mean(fw))}")
+print(f"mean Water prob delta     : {fmt_prob(mean(fw) - mean(bw))}")
+
+print()
+print(f"Base mean Agriculture prob: {fmt_prob(mean(ba))}")
+print(f"v0.2 mean Agriculture prob: {fmt_prob(mean(fa))}")
+print(f"mean Agriculture delta    : {fmt_prob(mean(fa) - mean(ba))}")
+
+
+# ============================================================
+# 9. Compare retained vs lost Base-Water sites
+# ============================================================
+
+heading("9. RETAINED WATER VS LOST WATER")
+
+groups = {
+    "retained_water": [],
+    "lost_to_agriculture": [],
+    "lost_to_other": [],
+}
+
+for key in base_correct_keys:
+    r = m2[key]
+    dst = to_int(r["fine_tuned_predicted_class"])
+
+    if dst == 6:
+        groups["retained_water"].append(r)
+    elif dst == 7:
+        groups["lost_to_agriculture"].append(r)
+    else:
+        groups["lost_to_other"].append(r)
+
+
+for name, rows in groups.items():
+    print()
+    print(f"[{name}]")
+    print(f"n                         : {len(rows)}")
+
+    if not rows:
         continue
 
-    commit_value = (
-        manifest.get("git_commit_sha")
-        or manifest.get("commit_sha")
-        or manifest.get("git_sha")
-    )
+    b_water = [to_float(r["base_expected_probability"]) for r in rows]
+    f_water = [to_float(r["fine_tuned_expected_probability"]) for r in rows]
 
+    b_agri = [to_float(r["base_agriculture_probability"]) for r in rows]
+    f_agri = [to_float(r["fine_tuned_agriculture_probability"]) for r in rows]
+
+    print(f"Base Water prob           : {fmt_prob(mean(b_water))}")
+    print(f"v0.2 Water prob           : {fmt_prob(mean(f_water))}")
+    print(f"Base Agriculture prob     : {fmt_prob(mean(b_agri))}")
+    print(f"v0.2 Agriculture prob     : {fmt_prob(mean(f_agri))}")
+
+
+# ============================================================
+# 10. v0.1 -> v0.2 recovery pattern
+# ============================================================
+
+heading("10. v0.1 -> v0.2 RECOVERY ON WATER REFERENCE")
+
+recovery = Counter()
+
+for key in water_keys:
+    r1 = m1[key]
+    r2 = m2[key]
+
+    v01_pred = to_int(r1["fine_tuned_predicted_class"])
+    v02_pred = to_int(r2["fine_tuned_predicted_class"])
+
+    recovery[(v01_pred, v02_pred)] += 1
+
+
+print("From v0.1                     -> To v0.2                     Count")
+print("-" * 72)
+
+for (src, dst), count in sorted(
+    recovery.items(),
+    key=lambda x: (-x[1], x[0][0], x[0][1]),
+):
     print(
-        f"{name:30s}: "
-        f"recorded commit SHA = "
-        f"{commit_value if commit_value else 'NOT RECORDED'}"
+        f"{src}: {class_name(src):27s} -> "
+        f"{dst}: {class_name(dst):27s} {count:3d}"
     )
 
 
 # ============================================================
-# 11. Final evidence closure summary
+# 11. Simple diagnosis flags
 # ============================================================
 
-heading("11. EVIDENCE CLOSURE SUMMARY")
+heading("11. WATER DIAGNOSIS SUMMARY")
 
-base_ok = True
+if lost == 0:
+    agri_loss_share = 0.0
+else:
+    agri_loss_share = water_to_agri / lost
 
-if m_v01:
-    base_ok &= m_v01.get("base_model_sha256") == actual_base_hash
-if m_v02:
-    base_ok &= m_v02.get("base_model_sha256") == actual_base_hash
-if e_v01:
-    base_ok &= e_v01.get("base_checkpoint_sha256") == actual_base_hash
-if e_v02:
-    base_ok &= e_v02.get("base_checkpoint_sha256") == actual_base_hash
 
-v01_ckpt_ok = (
-    e_v01 is not None
-    and e_v01.get("fine_tuned_checkpoint_sha256") == v01_best_hash
-)
-
-v02_ckpt_ok = (
-    e_v02 is not None
-    and e_v02.get("fine_tuned_checkpoint_sha256") == v02_best_hash
-)
-
-split_ok = (
-    sha256(V01_TRAIN / "train_ids.json")
-    == sha256(V02_TRAIN / "train_ids.json")
-    and sha256(V01_TRAIN / "validation_ids.json")
-    == sha256(V02_TRAIN / "validation_ids.json")
-)
-
-site_ok = sites1 == sites2 and success_keys1 == success_keys2
-
-print(f"Original Base identity         : {boolstr(base_ok)}")
-print(f"v0.1 Pilot -> evaluation       : {boolstr(v01_ckpt_ok)}")
-print(f"v0.2 Pilot -> evaluation       : {boolstr(v02_ckpt_ok)}")
-print(f"v0.1/v0.2 split identity       : {boolstr(split_ok)}")
-print(f"SACLAJ site identity           : {boolstr(site_ok)}")
-print(f"GSI evaluation patch identity  : {boolstr(patch_identity_pass)}")
-
-statuses_ok = True
-
-if m_v01:
-    statuses_ok &= m_v01.get("status") == "completed"
-
-if m_pre:
-    statuses_ok &= m_pre.get("status") == "preflight_passed"
-
-if m_smoke:
-    statuses_ok &= m_smoke.get("status") == "smoke_test_completed"
-
-if m_v02:
-    statuses_ok &= m_v02.get("status") == "completed"
-
-if e_v01:
-    statuses_ok &= e_v01.get("status") == "completed"
-
-if e_v02:
-    statuses_ok &= e_v02.get("status") == "completed"
-
-print(f"Run status chain               : {boolstr(statuses_ok)}")
-
-overall = (
-    base_ok
-    and v01_ckpt_ok
-    and v02_ckpt_ok
-    and split_ok
-    and site_ok
-    and patch_identity_pass
-    and statuses_ok
-)
+print(f"Base Water-correct sites      : {len(base_correct_keys)}")
+print(f"Retained as Water in v0.2     : {retained}")
+print(f"Lost from Water in v0.2       : {lost}")
+print(f"Lost specifically to Agri     : {water_to_agri}")
+print(f"Lost to other classes         : {water_to_other}")
+print(f"Agri share of Water loss      : {100 * agri_loss_share:.1f}%")
 
 print()
-print(f"EVIDENCE CLOSURE RESULT        : {boolstr(overall)}")
+
+if agri_loss_share >= 0.70:
+    print(
+        "PATTERN: Strongly concentrated Water -> Agriculture transition."
+    )
+    print(
+        "Interpretation candidate: Agriculture adaptation directly competes "
+        "with the Base Water decision on many sites."
+    )
+elif agri_loss_share >= 0.40:
+    print(
+        "PATTERN: Water loss is partly concentrated toward Agriculture, "
+        "but substantial loss also goes to other classes."
+    )
+    print(
+        "Interpretation candidate: class-7 pressure is important but may not "
+        "fully explain the degradation."
+    )
+else:
+    print(
+        "PATTERN: Water loss is broadly distributed across classes rather than "
+        "mainly Water -> Agriculture."
+    )
+    print(
+        "Interpretation candidate: investigate wider decoder / representation "
+        "drift, including BatchNorm behavior, before assuming class-7 conflict."
+    )
 
 print()
 print(
-    "NOTE: Historical execution commit SHA cannot be fully closed "
-    "if it was not recorded in the run manifest."
+    "This is a descriptive diagnosis from the existing development evaluation, "
+    "not a causal proof."
 )
 
 print(
-    "No SACLAJ IDs, coordinates, or site-level predictions were printed "
-    "by this script."
+    "No SACLAJ IDs, coordinates, patch names, or site-level predictions "
+    "were printed."
 )
