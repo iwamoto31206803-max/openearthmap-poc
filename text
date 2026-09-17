@@ -1,43 +1,66 @@
 from pathlib import Path
-from collections import Counter, defaultdict
-import csv
+from collections import Counter
+import json
 import math
+import time
+
+import numpy as np
+from PIL import Image
+
+import torch
+from torch.nn import functional as F
+
+from src.model import build_model, rgb_to_tensor
+from src.training.gsi_dataset import read_label, TARGET_CLASS
+from src.training.prepare_gsi_labels import IGNORE_INDEX
 
 
 # ============================================================
 # OpenEarthMap Phase A
-# Water degradation diagnosis from EXISTING SACLAJ results only
+# GSI paddy teacher vs Base Water conflict diagnosis
 #
-# IMPORTANT:
-# - READ ONLY
-# - No new model inference
-# - No network access
-# - No training
-# - No SACLAJ IDs / coordinates / site-level rows are printed
+# PURPOSE
+# -------
+# Diagnose whether GSI paddy positive supervision directly conflicts
+# with the Base model's Water decision.
+#
+# READ ONLY:
+# - no training
+# - no optimizer
+# - no checkpoint write
+# - no input modification
+#
+# Public GSI image IDs are not printed; only aggregate statistics.
 # ============================================================
 
 
 ROOT = Path(r"C:\OpenEarthMap_PoC")
 
-V01_EVAL = (
+ORG = ROOT / "data" / "gsi" / "raw" / "paddy_572" / "org"
+LABELS = ROOT / "data" / "gsi" / "prepared" / "paddy_572" / "labels"
+
+BASE = (
     ROOT
-    / "data"
-    / "saclaj"
-    / "results"
-    / "20260916T100521_996447Z_ad671432"
+    / "OpenEarthMap-SAR"
+    / "src"
+    / "Semantic_Segemtation"
+    / "pretrained"
+    / "RGB_Real_5_u-efficientnet-b4.pth"
 )
 
-V02_EVAL = (
+V02_PILOT = (
     ROOT
-    / "data"
-    / "saclaj"
-    / "results"
-    / "20260916T135520_362028Z_4a047f8d"
+    / "training_outputs"
+    / "gsi_phase_a_v02"
+    / "pilot"
+    / "20260916T130118_489262Z_4a19e066"
 )
 
-V01_CSV = V01_EVAL / "site_results.csv"
-V02_CSV = V02_EVAL / "site_results.csv"
+TRAIN_IDS = V02_PILOT / "train_ids.json"
+VALIDATION_IDS = V02_PILOT / "validation_ids.json"
 
+DEVICE = "cpu"
+NUM_THREADS = 2
 
 CLASS_NAMES = {
     0: "Background / Unlabelled",
@@ -54,492 +77,598 @@ CLASS_NAMES = {
 
 def heading(text):
     print()
-    print("=" * 76)
+    print("=" * 78)
     print(text)
-    print("=" * 76)
+    print("=" * 78)
 
 
-def load_rows(path: Path):
+def load_json(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_id_set(path):
+    data = load_json(path)
+
+    if isinstance(data, list):
+        return set(str(x) for x in data)
+
+    if isinstance(data, dict):
+        for key in ("image_ids", "ids", "samples"):
+            if key in data and isinstance(data[key], list):
+                return set(str(x) for x in data[key])
+
+    raise ValueError(f"Cannot interpret ID file structure: {path}")
+
+
+def png_map(directory):
+    result = {}
+
+    for path in directory.rglob("*.png"):
+        rel = path.relative_to(directory).with_suffix("").as_posix()
+        result[rel] = path
+
+    return result
+
+
+def pad_to_stride32(rgb_tensor):
+    h, w = rgb_tensor.shape[1:]
+    target_h = ((h + 31) // 32) * 32
+    target_w = ((w + 31) // 32) * 32
+
+    padding = (0, target_w - w, 0, target_h - h)
+
+    return F.pad(
+        rgb_tensor,
+        padding,
+        mode="replicate",
+    )
+
+
+class Aggregate:
+    def __init__(self):
+        self.pixel_count = 0
+        self.predicted = Counter()
+
+        self.water_prob_sum = 0.0
+        self.agri_prob_sum = 0.0
+
+        self.water_argmax_count = 0
+        self.agri_argmax_count = 0
+
+    def add(self, probabilities, prediction):
+        n = int(prediction.numel())
+
+        self.pixel_count += n
+
+        bincount = torch.bincount(
+            prediction.reshape(-1).cpu(),
+            minlength=9,
+        )
+
+        for cid in range(9):
+            self.predicted[cid] += int(bincount[cid])
+
+        self.water_argmax_count += int((prediction == 6).sum())
+        self.agri_argmax_count += int((prediction == 7).sum())
+
+        self.water_prob_sum += (
+            probabilities[:, 6].double().sum().item()
+        )
+
+        self.agri_prob_sum += (
+            probabilities[:, 7].double().sum().item()
+        )
+
+    def mean_water_prob(self):
+        if not self.pixel_count:
+            return math.nan
+        return self.water_prob_sum / self.pixel_count
+
+    def mean_agri_prob(self):
+        if not self.pixel_count:
+            return math.nan
+        return self.agri_prob_sum / self.pixel_count
+
+    def water_rate(self):
+        if not self.pixel_count:
+            return math.nan
+        return self.water_argmax_count / self.pixel_count
+
+    def agri_rate(self):
+        if not self.pixel_count:
+            return math.nan
+        return self.agri_argmax_count / self.pixel_count
+
+
+def print_aggregate(name, agg):
+    print()
+    print(f"[{name}]")
+    print(f"pixels                    : {agg.pixel_count:,}")
+
+    if agg.pixel_count == 0:
+        return
+
+    print(
+        f"Base argmax Water         : "
+        f"{agg.water_argmax_count:,} "
+        f"({100 * agg.water_rate():.4f}%)"
+    )
+
+    print(
+        f"Base argmax Agriculture   : "
+        f"{agg.agri_argmax_count:,} "
+        f"({100 * agg.agri_rate():.4f}%)"
+    )
+
+    print(
+        f"mean Base Water prob      : "
+        f"{agg.mean_water_prob():.6f}"
+    )
+
+    print(
+        f"mean Base Agriculture prob: "
+        f"{agg.mean_agri_prob():.6f}"
+    )
+
+    print()
+    print("Base top-1 class distribution")
+
+    for cid in range(9):
+        count = agg.predicted[cid]
+        pct = 100 * count / agg.pixel_count
+
+        print(
+            f"  {cid}: {CLASS_NAMES[cid]:28s} "
+            f"{count:12,d}  ({pct:7.3f}%)"
+        )
+
+
+# ============================================================
+# 0. Validate local inputs
+# ============================================================
+
+heading("0. LOCAL INPUT CHECK")
+
+for name, path in [
+    ("ORG", ORG),
+    ("LABELS", LABELS),
+    ("BASE", BASE),
+    ("TRAIN_IDS", TRAIN_IDS),
+    ("VALIDATION_IDS", VALIDATION_IDS),
+]:
+    print(
+        f"{name:20s}: "
+        f"{'PASS' if path.exists() else 'FAIL'}"
+    )
+
     if not path.exists():
         raise FileNotFoundError(path)
 
-    with path.open("r", encoding="utf-8-sig", newline="") as f:
-        return list(csv.DictReader(f))
+
+# ============================================================
+# 1. Pair images / labels and recover split
+# ============================================================
+
+heading("1. DATASET / SPLIT")
+
+images = png_map(ORG)
+labels = png_map(LABELS)
+
+if set(images) != set(labels):
+    raise ValueError("ORG / labels pairing mismatch")
+
+train_ids = load_id_set(TRAIN_IDS)
+validation_ids = load_id_set(VALIDATION_IDS)
+
+print(f"paired images             : {len(images)}")
+print(f"train IDs                 : {len(train_ids)}")
+print(f"validation IDs            : {len(validation_ids)}")
+
+if train_ids & validation_ids:
+    raise ValueError("Train / validation IDs overlap")
 
 
-def site_key(row):
-    # Sensitive values used ONLY locally for exact pairing.
-    # Never printed.
-    return (
-        row.get("ID", ""),
-        row.get("Latitude", ""),
-        row.get("Longitude", ""),
-        row.get("Category_ID", ""),
-        row.get("subtype", ""),
-        row.get("expected_class", ""),
+# ============================================================
+# 2. Build Base
+# ============================================================
+
+heading("2. LOAD ORIGINAL BASE")
+
+torch.set_num_threads(NUM_THREADS)
+
+model = build_model(BASE, device=DEVICE)
+model.eval()
+
+for p in model.parameters():
+    p.requires_grad_(False)
+
+print("Base strict load          : PASS")
+print(f"device                    : {DEVICE}")
+print(f"torch threads             : {NUM_THREADS}")
+
+
+# ============================================================
+# 3. Aggregation buckets
+# ============================================================
+
+positive_all = Aggregate()
+unknown_positive_images = Aggregate()
+all_ignore = Aggregate()
+
+positive_train = Aggregate()
+positive_validation = Aggregate()
+
+# Number of positive-bearing images where at least one positive pixel
+# is predicted Water by Base.
+positive_images = 0
+positive_images_with_base_water = 0
+
+# Strong conflict:
+# GSI says Agriculture, Base top-1 says Water.
+positive_water_pixels_per_image = []
+
+usable_count = 0
+all_ignore_count = 0
+
+start = time.time()
+
+
+# ============================================================
+# 4. Full dataset Base inference
+# ============================================================
+
+heading("3. FULL GSI PADDY DATASET BASE INFERENCE")
+
+with torch.inference_mode():
+
+    for index, image_id in enumerate(sorted(images), start=1):
+
+        image_path = images[image_id]
+        label_path = labels[image_id]
+
+        with Image.open(image_path) as img:
+            rgb = np.asarray(
+                img.convert("RGB"),
+                dtype=np.uint8,
+            )
+
+        label_np = read_label(label_path)
+
+        if rgb.shape[:2] != label_np.shape:
+            raise ValueError("RGB / label shape mismatch")
+
+        h, w = label_np.shape
+
+        tensor = rgb_to_tensor(rgb)
+        tensor = pad_to_stride32(tensor)
+        tensor = tensor.unsqueeze(0).to(DEVICE)
+
+        logits = model(tensor)
+
+        # Remove synthetic right/bottom padding.
+        logits = logits[:, :, :h, :w]
+
+        probabilities = logits.softmax(1)
+        prediction = logits.argmax(1)
+
+        label = torch.from_numpy(
+            label_np.astype(np.int64)
+        ).unsqueeze(0)
+
+        positive = label == TARGET_CLASS
+        unknown = label == IGNORE_INDEX
+
+        positive_count = int(positive.sum())
+
+        # ----------------------------------------------------
+        # Positive-bearing image
+        # ----------------------------------------------------
+
+        if positive_count > 0:
+
+            usable_count += 1
+            positive_images += 1
+
+            p_probs = probabilities.permute(
+                0, 2, 3, 1
+            )[positive]
+
+            p_pred = prediction[positive]
+
+            # convert Nx9 -> 1x9xN style expected by Aggregate.add
+            p_probs_for_agg = p_probs.T.unsqueeze(0)
+            p_pred_for_agg = p_pred.unsqueeze(0)
+
+            positive_all.add(
+                p_probs_for_agg,
+                p_pred_for_agg,
+            )
+
+            if image_id in train_ids:
+                positive_train.add(
+                    p_probs_for_agg,
+                    p_pred_for_agg,
+                )
+
+            elif image_id in validation_ids:
+                positive_validation.add(
+                    p_probs_for_agg,
+                    p_pred_for_agg,
+                )
+
+            else:
+                raise ValueError(
+                    "Positive-bearing image is in neither "
+                    "train nor validation split"
+                )
+
+            water_on_positive = int(
+                (p_pred == 6).sum()
+            )
+
+            positive_water_pixels_per_image.append(
+                water_on_positive
+            )
+
+            if water_on_positive > 0:
+                positive_images_with_base_water += 1
+
+            # Real unknown pixels inside positive-bearing images
+            u_probs = probabilities.permute(
+                0, 2, 3, 1
+            )[unknown]
+
+            u_pred = prediction[unknown]
+
+            unknown_positive_images.add(
+                u_probs.T.unsqueeze(0),
+                u_pred.unsqueeze(0),
+            )
+
+        # ----------------------------------------------------
+        # All-ignore / FALSE image
+        # ----------------------------------------------------
+
+        else:
+
+            all_ignore_count += 1
+
+            if not bool(unknown.all()):
+                raise ValueError(
+                    "Image has no positive pixels but is not all-ignore"
+                )
+
+            probs_flat = probabilities.reshape(
+                1, 9, -1
+            )
+
+            pred_flat = prediction.reshape(
+                1, -1
+            )
+
+            all_ignore.add(
+                probs_flat,
+                pred_flat,
+            )
+
+        if index % 50 == 0 or index == len(images):
+
+            elapsed = time.time() - start
+
+            print(
+                f"processed {index}/{len(images)} "
+                f"| positive-images={usable_count} "
+                f"| all-ignore={all_ignore_count} "
+                f"| elapsed={elapsed / 60:.1f} min",
+                flush=True,
+            )
+
+
+# ============================================================
+# 5. Dataset sanity
+# ============================================================
+
+heading("4. DATASET SANITY")
+
+print(f"positive-bearing images   : {usable_count}")
+print(f"all-ignore images         : {all_ignore_count}")
+
+print(
+    "expected                 : "
+    "1286 positive-bearing / 1314 all-ignore"
+)
+
+print(
+    "dataset count check      : "
+    + (
+        "PASS"
+        if usable_count == 1286
+        and all_ignore_count == 1314
+        else "FAIL"
+    )
+)
+
+
+# ============================================================
+# 6. Core conflict result
+# ============================================================
+
+heading("5. CORE QUESTION: DOES GSI PADDY POSITIVE CONFLICT WITH BASE WATER?")
+
+print_aggregate(
+    "GSI PADDY POSITIVE PIXELS",
+    positive_all,
+)
+
+print()
+print(
+    f"positive-bearing images with >=1 "
+    f"Base-Water positive pixel: "
+    f"{positive_images_with_base_water} / {positive_images}"
+)
+
+if positive_images:
+    print(
+        "image-level occurrence rate      : "
+        f"{100 * positive_images_with_base_water / positive_images:.2f}%"
     )
 
 
-def success_map(rows):
-    return {
-        site_key(r): r
-        for r in rows
-        if r.get("status") == "success"
-    }
+# ============================================================
+# 7. Train / validation consistency
+# ============================================================
 
+heading("6. POSITIVE PIXELS: TRAIN VS VALIDATION")
 
-def to_int(value):
-    return int(float(value))
+print_aggregate(
+    "TRAIN POSITIVE",
+    positive_train,
+)
 
-
-def to_float(value):
-    if value in (None, ""):
-        return math.nan
-    return float(value)
-
-
-def fmt_prob(value):
-    if math.isnan(value):
-        return "N/A"
-    return f"{value:.4f}"
-
-
-def mean(values):
-    values = [v for v in values if not math.isnan(v)]
-    if not values:
-        return math.nan
-    return sum(values) / len(values)
-
-
-def class_name(class_id):
-    return CLASS_NAMES.get(class_id, f"Unknown class {class_id}")
+print_aggregate(
+    "VALIDATION POSITIVE",
+    positive_validation,
+)
 
 
 # ============================================================
-# 0. Load / pair
+# 8. Unknown areas
 # ============================================================
 
-heading("0. LOAD EXISTING SACLAJ RESULTS")
+heading("7. UNKNOWN PIXELS INSIDE POSITIVE-BEARING IMAGES")
 
-rows1 = load_rows(V01_CSV)
-rows2 = load_rows(V02_CSV)
+print_aggregate(
+    "UNKNOWN IN POSITIVE-BEARING IMAGES",
+    unknown_positive_images,
+)
 
-m1 = success_map(rows1)
-m2 = success_map(rows2)
 
-common = set(m1) & set(m2)
+heading("8. ALL-IGNORE / FALSE IMAGES")
 
-print(f"v0.1 successful rows     : {len(m1)}")
-print(f"v0.2 successful rows     : {len(m2)}")
-print(f"common successful rows   : {len(common)}")
-
-if len(common) != 1000:
-    print("WARNING: expected 1000 common successful sites.")
+print_aggregate(
+    "ALL-IGNORE IMAGES",
+    all_ignore,
+)
 
 
 # ============================================================
-# 1. Select Water reference points
+# 9. Compare Base Water prevalence
 # ============================================================
 
-heading("1. WATER REFERENCE SUBSET")
+heading("9. BASE WATER PREVALENCE COMPARISON")
 
-water_keys = [
-    key
-    for key in common
-    if m2[key].get("subtype") == "water"
-    and to_int(m2[key].get("expected_class", "-1")) == 6
+groups = [
+    ("GSI positive", positive_all),
+    ("unknown in positive images", unknown_positive_images),
+    ("all-ignore images", all_ignore),
 ]
 
-print(f"Water reference sites    : {len(water_keys)}")
-
-if len(water_keys) != 100:
-    print("WARNING: expected 100 Water reference sites.")
-
-
-# ============================================================
-# 2. Sanity: Base predictions must match across evaluation runs
-# ============================================================
-
-heading("2. BASE PREDICTION IDENTITY ACROSS v0.1 / v0.2 EVALUATION RUNS")
-
-base_prediction_mismatch = 0
-base_expected_prob_diffs = []
-base_agri_prob_diffs = []
-
-for key in water_keys:
-    a = m1[key]
-    b = m2[key]
-
-    pred1 = to_int(a["base_predicted_class"])
-    pred2 = to_int(b["base_predicted_class"])
-
-    if pred1 != pred2:
-        base_prediction_mismatch += 1
-
-    p1 = to_float(a["base_expected_probability"])
-    p2 = to_float(b["base_expected_probability"])
-    a1 = to_float(a["base_agriculture_probability"])
-    a2 = to_float(b["base_agriculture_probability"])
-
-    base_expected_prob_diffs.append(abs(p1 - p2))
-    base_agri_prob_diffs.append(abs(a1 - a2))
-
-print(f"Base argmax mismatches   : {base_prediction_mismatch}")
 print(
-    "max |Base Water prob diff| : "
-    f"{max(base_expected_prob_diffs) if base_expected_prob_diffs else math.nan:.12g}"
+    f"{'Region':32s} "
+    f"{'Water argmax %':>15s} "
+    f"{'Mean Water p':>15s} "
+    f"{'Mean Agri p':>15s}"
 )
+
+print("-" * 82)
+
+for name, agg in groups:
+
+    print(
+        f"{name:32s} "
+        f"{100 * agg.water_rate():15.4f} "
+        f"{agg.mean_water_prob():15.6f} "
+        f"{agg.mean_agri_prob():15.6f}"
+    )
+
+
+# ============================================================
+# 10. Conflict strength interpretation
+# ============================================================
+
+heading("10. CONFLICT DIAGNOSIS SUMMARY")
+
+positive_water_rate = positive_all.water_rate()
+unknown_water_rate = unknown_positive_images.water_rate()
+false_water_rate = all_ignore.water_rate()
+
 print(
-    "max |Base Agri prob diff|  : "
-    f"{max(base_agri_prob_diffs) if base_agri_prob_diffs else math.nan:.12g}"
+    f"Base Water argmax on GSI positive      : "
+    f"{100 * positive_water_rate:.4f}%"
 )
 
-base_identity_pass = (
-    base_prediction_mismatch == 0
-    and max(base_expected_prob_diffs, default=0) < 1e-12
-    and max(base_agri_prob_diffs, default=0) < 1e-12
+print(
+    f"Base Water argmax on nearby unknown     : "
+    f"{100 * unknown_water_rate:.4f}%"
 )
 
-print(f"Base inference identity  : {'PASS' if base_identity_pass else 'FAIL'}")
-
-
-# ============================================================
-# 3. Overall predictions on Water reference points
-# ============================================================
-
-heading("3. WATER REFERENCE: TOP-1 PREDICTION DISTRIBUTION")
-
-base_counts = Counter()
-v01_counts = Counter()
-v02_counts = Counter()
-
-for key in water_keys:
-    r1 = m1[key]
-    r2 = m2[key]
-
-    base_counts[to_int(r2["base_predicted_class"])] += 1
-    v01_counts[to_int(r1["fine_tuned_predicted_class"])] += 1
-    v02_counts[to_int(r2["fine_tuned_predicted_class"])] += 1
-
-
-print("Class                         Base   v0.1   v0.2")
-print("-" * 55)
-
-for cid in range(9):
-    print(
-        f"{cid}: {class_name(cid):28s} "
-        f"{base_counts[cid]:4d}   {v01_counts[cid]:4d}   {v02_counts[cid]:4d}"
-    )
-
-print()
-print(f"Base Water agreement     : {base_counts[6]} / {len(water_keys)}")
-print(f"v0.1 Water agreement     : {v01_counts[6]} / {len(water_keys)}")
-print(f"v0.2 Water agreement     : {v02_counts[6]} / {len(water_keys)}")
-
-
-# ============================================================
-# 4. Base -> v0.2 paired transition
-# ============================================================
-
-heading("4. PAIRED TRANSITION: BASE -> v0.2 ON WATER REFERENCE")
-
-transition = Counter()
-
-for key in water_keys:
-    r = m2[key]
-
-    base_pred = to_int(r["base_predicted_class"])
-    v02_pred = to_int(r["fine_tuned_predicted_class"])
-
-    transition[(base_pred, v02_pred)] += 1
-
-
-print("From Base                     -> To v0.2                     Count")
-print("-" * 72)
-
-for (src, dst), count in sorted(
-    transition.items(),
-    key=lambda x: (-x[1], x[0][0], x[0][1]),
-):
-    print(
-        f"{src}: {class_name(src):27s} -> "
-        f"{dst}: {class_name(dst):27s} {count:3d}"
-    )
-
-
-# ============================================================
-# 5. Focus: Base-correct Water -> v0.2
-# ============================================================
-
-heading("5. BASE-CORRECT WATER SITES: WHERE DID v0.2 MOVE?")
-
-base_correct_keys = [
-    key
-    for key in water_keys
-    if to_int(m2[key]["base_predicted_class"]) == 6
-]
-
-print(f"Base-correct Water sites : {len(base_correct_keys)}")
-
-destination = Counter(
-    to_int(m2[key]["fine_tuned_predicted_class"])
-    for key in base_correct_keys
+print(
+    f"Base Water argmax on all-ignore images  : "
+    f"{100 * false_water_rate:.4f}%"
 )
 
-for cid, count in sorted(destination.items(), key=lambda x: (-x[1], x[0])):
-    pct = 100 * count / len(base_correct_keys) if base_correct_keys else 0
-
-    print(
-        f"{cid}: {class_name(cid):28s} "
-        f"{count:3d}  ({pct:5.1f}%)"
-    )
-
-
-retained = destination[6]
-lost = len(base_correct_keys) - retained
-
 print()
-print(f"Water retained           : {retained}")
-print(f"Water lost               : {lost}")
 
-if base_correct_keys:
+if positive_water_rate >= 0.05:
+
     print(
-        f"Water retention rate     : "
-        f"{100 * retained / len(base_correct_keys):.1f}%"
+        "PATTERN: DIRECT LABEL CONFLICT IS SUBSTANTIAL."
     )
 
-
-# ============================================================
-# 6. Was Water mainly absorbed by Agriculture?
-# ============================================================
-
-heading("6. BASE-CORRECT WATER LOSS: AGRICULTURE VS OTHER CLASSES")
-
-water_to_agri = 0
-water_to_other = 0
-
-for key in base_correct_keys:
-    dst = to_int(m2[key]["fine_tuned_predicted_class"])
-
-    if dst == 6:
-        continue
-    elif dst == 7:
-        water_to_agri += 1
-    else:
-        water_to_other += 1
-
-
-print(f"Base Water -> Agriculture: {water_to_agri}")
-print(f"Base Water -> other class: {water_to_other}")
-
-if lost:
     print(
-        f"Agriculture share of Water loss: "
-        f"{100 * water_to_agri / lost:.1f}%"
+        "A meaningful fraction of pixels that GSI explicitly labels "
+        "Agriculture are predicted Water by the original Base."
     )
 
-
-# ============================================================
-# 7. Probability shifts on ALL Water reference points
-# ============================================================
-
-heading("7. PROBABILITY SHIFT: ALL WATER REFERENCE SITES")
-
-base_water_probs = []
-v01_water_probs = []
-v02_water_probs = []
-
-base_agri_probs = []
-v01_agri_probs = []
-v02_agri_probs = []
-
-for key in water_keys:
-    r1 = m1[key]
-    r2 = m2[key]
-
-    base_water_probs.append(to_float(r2["base_expected_probability"]))
-    v01_water_probs.append(to_float(r1["fine_tuned_expected_probability"]))
-    v02_water_probs.append(to_float(r2["fine_tuned_expected_probability"]))
-
-    base_agri_probs.append(to_float(r2["base_agriculture_probability"]))
-    v01_agri_probs.append(to_float(r1["fine_tuned_agriculture_probability"]))
-    v02_agri_probs.append(to_float(r2["fine_tuned_agriculture_probability"]))
-
-
-print("Mean Water probability")
-print(f"  Base : {fmt_prob(mean(base_water_probs))}")
-print(f"  v0.1 : {fmt_prob(mean(v01_water_probs))}")
-print(f"  v0.2 : {fmt_prob(mean(v02_water_probs))}")
-
-print()
-print("Mean Agriculture probability")
-print(f"  Base : {fmt_prob(mean(base_agri_probs))}")
-print(f"  v0.1 : {fmt_prob(mean(v01_agri_probs))}")
-print(f"  v0.2 : {fmt_prob(mean(v02_agri_probs))}")
-
-
-# ============================================================
-# 8. Probability shifts only where Base was correct Water
-# ============================================================
-
-heading("8. PROBABILITY SHIFT: BASE-CORRECT WATER SITES ONLY")
-
-bw = []
-fw = []
-ba = []
-fa = []
-
-for key in base_correct_keys:
-    r = m2[key]
-
-    bw.append(to_float(r["base_expected_probability"]))
-    fw.append(to_float(r["fine_tuned_expected_probability"]))
-
-    ba.append(to_float(r["base_agriculture_probability"]))
-    fa.append(to_float(r["fine_tuned_agriculture_probability"]))
-
-
-print(f"n                         : {len(base_correct_keys)}")
-print(f"Base mean Water prob      : {fmt_prob(mean(bw))}")
-print(f"v0.2 mean Water prob      : {fmt_prob(mean(fw))}")
-print(f"mean Water prob delta     : {fmt_prob(mean(fw) - mean(bw))}")
-
-print()
-print(f"Base mean Agriculture prob: {fmt_prob(mean(ba))}")
-print(f"v0.2 mean Agriculture prob: {fmt_prob(mean(fa))}")
-print(f"mean Agriculture delta    : {fmt_prob(mean(fa) - mean(ba))}")
-
-
-# ============================================================
-# 9. Compare retained vs lost Base-Water sites
-# ============================================================
-
-heading("9. RETAINED WATER VS LOST WATER")
-
-groups = {
-    "retained_water": [],
-    "lost_to_agriculture": [],
-    "lost_to_other": [],
-}
-
-for key in base_correct_keys:
-    r = m2[key]
-    dst = to_int(r["fine_tuned_predicted_class"])
-
-    if dst == 6:
-        groups["retained_water"].append(r)
-    elif dst == 7:
-        groups["lost_to_agriculture"].append(r)
-    else:
-        groups["lost_to_other"].append(r)
-
-
-for name, rows in groups.items():
-    print()
-    print(f"[{name}]")
-    print(f"n                         : {len(rows)}")
-
-    if not rows:
-        continue
-
-    b_water = [to_float(r["base_expected_probability"]) for r in rows]
-    f_water = [to_float(r["fine_tuned_expected_probability"]) for r in rows]
-
-    b_agri = [to_float(r["base_agriculture_probability"]) for r in rows]
-    f_agri = [to_float(r["fine_tuned_agriculture_probability"]) for r in rows]
-
-    print(f"Base Water prob           : {fmt_prob(mean(b_water))}")
-    print(f"v0.2 Water prob           : {fmt_prob(mean(f_water))}")
-    print(f"Base Agriculture prob     : {fmt_prob(mean(b_agri))}")
-    print(f"v0.2 Agriculture prob     : {fmt_prob(mean(f_agri))}")
-
-
-# ============================================================
-# 10. v0.1 -> v0.2 recovery pattern
-# ============================================================
-
-heading("10. v0.1 -> v0.2 RECOVERY ON WATER REFERENCE")
-
-recovery = Counter()
-
-for key in water_keys:
-    r1 = m1[key]
-    r2 = m2[key]
-
-    v01_pred = to_int(r1["fine_tuned_predicted_class"])
-    v02_pred = to_int(r2["fine_tuned_predicted_class"])
-
-    recovery[(v01_pred, v02_pred)] += 1
-
-
-print("From v0.1                     -> To v0.2                     Count")
-print("-" * 72)
-
-for (src, dst), count in sorted(
-    recovery.items(),
-    key=lambda x: (-x[1], x[0][0], x[0][1]),
-):
     print(
-        f"{src}: {class_name(src):27s} -> "
-        f"{dst}: {class_name(dst):27s} {count:3d}"
+        "This supports the hypothesis that paddy adaptation can directly "
+        "move a Water/Agriculture decision boundary."
     )
 
+elif positive_water_rate >= 0.01:
 
-# ============================================================
-# 11. Simple diagnosis flags
-# ============================================================
+    print(
+        "PATTERN: DIRECT LABEL CONFLICT EXISTS, BUT IS MODERATE."
+    )
 
-heading("11. WATER DIAGNOSIS SUMMARY")
+    print(
+        "GSI paddy positives do overlap Base-Water predictions, "
+        "so direct competition is plausible, but it may not fully explain "
+        "the large Water degradation."
+    )
 
-if lost == 0:
-    agri_loss_share = 0.0
 else:
-    agri_loss_share = water_to_agri / lost
 
+    print(
+        "PATTERN: DIRECT GSI-POSITIVE / BASE-WATER CONFLICT IS RARE."
+    )
 
-print(f"Base Water-correct sites      : {len(base_correct_keys)}")
-print(f"Retained as Water in v0.2     : {retained}")
-print(f"Lost from Water in v0.2       : {lost}")
-print(f"Lost specifically to Agri     : {water_to_agri}")
-print(f"Lost to other classes         : {water_to_other}")
-print(f"Agri share of Water loss      : {100 * agri_loss_share:.1f}%")
+    print(
+        "The large Water -> Agriculture shift is unlikely to be explained "
+        "only by explicit paddy pixels that Base calls Water."
+    )
+
+    print(
+        "Broader decoder representation drift / BatchNorm behavior / "
+        "preservation strength should move up the diagnostic priority."
+    )
 
 print()
 
-if agri_loss_share >= 0.70:
+if false_water_rate > 0:
+
     print(
-        "PATTERN: Strongly concentrated Water -> Agriculture transition."
+        "All-ignore images contain Base-Water predictions."
     )
+
     print(
-        "Interpretation candidate: Agriculture adaptation directly competes "
-        "with the Base Water decision on many sites."
-    )
-elif agri_loss_share >= 0.40:
-    print(
-        "PATTERN: Water loss is partly concentrated toward Agriculture, "
-        "but substantial loss also goes to other classes."
-    )
-    print(
-        "Interpretation candidate: class-7 pressure is important but may not "
-        "fully explain the degradation."
-    )
-else:
-    print(
-        "PATTERN: Water loss is broadly distributed across classes rather than "
-        "mainly Water -> Agriculture."
-    )
-    print(
-        "Interpretation candidate: investigate wider decoder / representation "
-        "drift, including BatchNorm behavior, before assuming class-7 conflict."
+        "They may therefore be useful as future preservation-only replay "
+        "images, but they are NOT Water ground truth or negative labels."
     )
 
 print()
 print(
-    "This is a descriptive diagnosis from the existing development evaluation, "
-    "not a causal proof."
-)
-
-print(
-    "No SACLAJ IDs, coordinates, patch names, or site-level predictions "
-    "were printed."
+    "This is descriptive evidence about Base predictions on the GSI "
+    "teacher dataset. It is not causal proof and does not establish "
+    "ground-truth Water."
 )
