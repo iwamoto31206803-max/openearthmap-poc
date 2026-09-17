@@ -1,571 +1,86 @@
-from pathlib import Path
-import math
-import statistics
-import time
+cd /d C:\OpenEarthMap_PoC\openearthmap-poc
+
+"C:\Program Files\Git\cmd\git.exe" fetch origin
+
+"C:\Program Files\Git\cmd\git.exe" switch codex/gsi-phase-a-v03-replay
+
+"C:\Program Files\Git\cmd\git.exe" pull --ff-only origin codex/gsi-phase-a-v03-replay
+
+call C:\OpenEarthMap_PoC\.venv\Scripts\activate.bat
+
+set "ORG=C:\OpenEarthMap_PoC\data\gsi\raw\paddy_572\org"
+set "PREPARED=C:\OpenEarthMap_PoC\data\gsi\prepared\paddy_572"
+set "BASE=C:\OpenEarthMap_PoC\OpenEarthMap-SAR\src\Semantic_Segemtation\pretrained\RGB_Real_5_u-efficientnet-b4.pth"
+set "BASE_SHA=852cd4f27627a8b0b34fe35618fabafc85e1ff5025eadc259176ca4ecc23a81c"
+set "RESULTS=C:\OpenEarthMap_PoC\training_outputs\gsi_phase_a_v03"
+
+
+
+
+
+python -m src.training.train_gsi_paddy ^
+  --org-dir "%ORG%" ^
+  --prepared-dir "%PREPARED%" ^
+  --base-model "%BASE%" ^
+  --base-sha256 "%BASE_SHA%" ^
+  --output-dir "%RESULTS%\preflight" ^
+  --training-mode base_preservation_replay ^
+  --lambda-preserve 1 ^
+  --temperature 1 ^
+  --alpha-replay 1 ^
+  --epochs 1 ^
+  --device cpu ^
+  --batch-size 1 ^
+  --num-threads 2 ^
+  --learning-rate 1e-4 ^
+  --seed 42 ^
+  --train-ratio 0.8 ^
+  --preflight
+
+
+
+
+python -m src.training.train_gsi_paddy ^
+  --org-dir "%ORG%" ^
+  --prepared-dir "%PREPARED%" ^
+  --base-model "%BASE%" ^
+  --base-sha256 "%BASE_SHA%" ^
+  --output-dir "%RESULTS%\smoke" ^
+  --training-mode base_preservation_replay ^
+  --lambda-preserve 1 ^
+  --temperature 1 ^
+  --alpha-replay 1 ^
+  --epochs 1 ^
+  --device cpu ^
+  --batch-size 1 ^
+  --num-threads 2 ^
+  --learning-rate 1e-4 ^
+  --seed 42 ^
+  --train-ratio 0.8 ^
+  --smoke-test
+
+
+
+
+
+python -m src.training.train_gsi_paddy ^
+  --org-dir "%ORG%" ^
+  --prepared-dir "%PREPARED%" ^
+  --base-model "%BASE%" ^
+  --base-sha256 "%BASE_SHA%" ^
+  --output-dir "%RESULTS%\pilot" ^
+  --training-mode base_preservation_replay ^
+  --lambda-preserve 1 ^
+  --temperature 1 ^
+  --alpha-replay 1 ^
+  --epochs 1 ^
+  --device cpu ^
+  --batch-size 1 ^
+  --num-threads 2 ^
+  --learning-rate 1e-4 ^
+  --seed 42 ^
+  --train-ratio 0.8
+
+  
+  
 
-import numpy as np
-from PIL import Image
-
-import torch
-from torch.nn import functional as F
-
-from src.model import build_model, rgb_to_tensor
-from src.training.gsi_dataset import read_label, TARGET_CLASS
-
-
-# ============================================================
-# OpenEarthMap Phase A
-# Per-image GSI paddy positive vs Base-Water conflict diagnosis
-#
-# READ ONLY
-# - no training
-# - no optimizer
-# - no file modification
-# - no image IDs printed
-# ============================================================
-
-
-ROOT = Path(r"C:\OpenEarthMap_PoC")
-
-ORG = ROOT / "data" / "gsi" / "raw" / "paddy_572" / "org"
-LABELS = ROOT / "data" / "gsi" / "prepared" / "paddy_572" / "labels"
-
-BASE = (
-    ROOT
-    / "OpenEarthMap-SAR"
-    / "src"
-    / "Semantic_Segemtation"
-    / "pretrained"
-    / "RGB_Real_5_u-efficientnet-b4.pth"
-)
-
-DEVICE = "cpu"
-NUM_THREADS = 2
-
-
-def heading(text):
-    print()
-    print("=" * 78)
-    print(text)
-    print("=" * 78)
-
-
-def png_map(directory):
-    result = {}
-    for path in directory.rglob("*.png"):
-        rel = path.relative_to(directory).with_suffix("").as_posix()
-        result[rel] = path
-    return result
-
-
-def pad_to_stride32(rgb_tensor):
-    h, w = rgb_tensor.shape[1:]
-    target_h = ((h + 31) // 32) * 32
-    target_w = ((w + 31) // 32) * 32
-
-    return F.pad(
-        rgb_tensor,
-        (0, target_w - w, 0, target_h - h),
-        mode="replicate",
-    )
-
-
-def percentile(values, q):
-    if not values:
-        return math.nan
-
-    x = sorted(values)
-
-    if len(x) == 1:
-        return x[0]
-
-    pos = (len(x) - 1) * q
-    lo = int(math.floor(pos))
-    hi = int(math.ceil(pos))
-
-    if lo == hi:
-        return x[lo]
-
-    frac = pos - lo
-    return x[lo] * (1 - frac) + x[hi] * frac
-
-
-def pct(x):
-    return f"{100 * x:.2f}%"
-
-
-# ============================================================
-# 0. Inputs
-# ============================================================
-
-heading("0. INPUT CHECK")
-
-for name, path in [
-    ("ORG", ORG),
-    ("LABELS", LABELS),
-    ("BASE", BASE),
-]:
-    print(f"{name:15s}: {'PASS' if path.exists() else 'FAIL'}")
-    if not path.exists():
-        raise FileNotFoundError(path)
-
-
-images = png_map(ORG)
-labels = png_map(LABELS)
-
-if set(images) != set(labels):
-    raise ValueError("ORG / LABELS pairing mismatch")
-
-print(f"paired images   : {len(images)}")
-
-
-# ============================================================
-# 1. Base
-# ============================================================
-
-heading("1. LOAD ORIGINAL BASE")
-
-torch.set_num_threads(NUM_THREADS)
-
-model = build_model(BASE, device=DEVICE)
-model.eval()
-
-for p in model.parameters():
-    p.requires_grad_(False)
-
-print("Base strict load: PASS")
-
-
-# ============================================================
-# 2. Run Base on positive-bearing images
-# ============================================================
-
-heading("2. PER-IMAGE CONFLICT ANALYSIS")
-
-water_fraction_per_image = []
-
-positive_pixels_per_image = []
-water_pixels_per_image = []
-
-water_prob_on_water_predicted_pixels = []
-water_prob_on_all_positive_pixels = []
-agri_prob_on_all_positive_pixels = []
-
-positive_image_count = 0
-all_ignore_count = 0
-
-total_positive_pixels = 0
-total_water_on_positive = 0
-
-start = time.time()
-
-
-with torch.inference_mode():
-
-    for index, image_id in enumerate(sorted(images), start=1):
-
-        label_np = read_label(labels[image_id])
-
-        positive_np = label_np == TARGET_CLASS
-        positive_count = int(np.count_nonzero(positive_np))
-
-        if positive_count == 0:
-            all_ignore_count += 1
-            continue
-
-        positive_image_count += 1
-
-        with Image.open(images[image_id]) as img:
-            rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
-
-        h, w = label_np.shape
-
-        tensor = rgb_to_tensor(rgb)
-        tensor = pad_to_stride32(tensor)
-        tensor = tensor.unsqueeze(0).to(DEVICE)
-
-        logits = model(tensor)
-        logits = logits[:, :, :h, :w]
-
-        probs = logits.softmax(1)
-        pred = logits.argmax(1)
-
-        positive = torch.from_numpy(
-            positive_np
-        ).unsqueeze(0)
-
-        positive_pred = pred[positive]
-
-        water_count = int((positive_pred == 6).sum())
-
-        fraction = water_count / positive_count
-
-        water_fraction_per_image.append(fraction)
-        positive_pixels_per_image.append(positive_count)
-        water_pixels_per_image.append(water_count)
-
-        total_positive_pixels += positive_count
-        total_water_on_positive += water_count
-
-        positive_probs = probs.permute(
-            0, 2, 3, 1
-        )[positive]
-
-        water_prob_on_all_positive_pixels.append(
-            positive_probs[:, 6].double().mean().item()
-        )
-
-        agri_prob_on_all_positive_pixels.append(
-            positive_probs[:, 7].double().mean().item()
-        )
-
-        if water_count > 0:
-            mask = positive_pred == 6
-
-            water_prob_on_water_predicted_pixels.append(
-                positive_probs[mask, 6].double().mean().item()
-            )
-
-        if positive_image_count % 50 == 0:
-            elapsed = (time.time() - start) / 60
-
-            print(
-                f"positive images processed: "
-                f"{positive_image_count}/1286 "
-                f"| elapsed={elapsed:.1f} min",
-                flush=True,
-            )
-
-
-# ============================================================
-# 3. Basic sanity
-# ============================================================
-
-heading("3. DATASET SANITY")
-
-print(f"positive-bearing images : {positive_image_count}")
-print(f"all-ignore images       : {all_ignore_count}")
-
-print(
-    "count check             : "
-    + (
-        "PASS"
-        if positive_image_count == 1286
-        and all_ignore_count == 1314
-        else "FAIL"
-    )
-)
-
-print(f"total positive pixels   : {total_positive_pixels:,}")
-print(f"Base-Water pixels       : {total_water_on_positive:,}")
-print(
-    f"overall weighted Water rate: "
-    f"{pct(total_water_on_positive / total_positive_pixels)}"
-)
-
-
-# ============================================================
-# 4. Per-image Water fraction distribution
-# ============================================================
-
-heading("4. PER-IMAGE BASE-WATER FRACTION ON GSI POSITIVE")
-
-print(
-    f"mean     : "
-    f"{pct(statistics.mean(water_fraction_per_image))}"
-)
-
-print(
-    f"median   : "
-    f"{pct(statistics.median(water_fraction_per_image))}"
-)
-
-for label, q in [
-    ("p10", 0.10),
-    ("p25", 0.25),
-    ("p50", 0.50),
-    ("p75", 0.75),
-    ("p90", 0.90),
-    ("p95", 0.95),
-    ("p99", 0.99),
-]:
-
-    print(
-        f"{label:8s}: "
-        f"{pct(percentile(water_fraction_per_image, q))}"
-    )
-
-print(
-    f"max      : "
-    f"{pct(max(water_fraction_per_image))}"
-)
-
-
-# ============================================================
-# 5. Threshold counts
-# ============================================================
-
-heading("5. HOW MANY IMAGES HAVE LARGE DIRECT CONFLICT?")
-
-thresholds = [
-    0.00,
-    0.01,
-    0.05,
-    0.10,
-    0.25,
-    0.50,
-    0.75,
-]
-
-for threshold in thresholds:
-
-    if threshold == 0:
-        count = sum(
-            x > 0
-            for x in water_fraction_per_image
-        )
-
-        text = "> 0%"
-
-    else:
-        count = sum(
-            x >= threshold
-            for x in water_fraction_per_image
-        )
-
-        text = f">= {100 * threshold:.0f}%"
-
-    print(
-        f"{text:10s}: "
-        f"{count:4d} / {positive_image_count} "
-        f"({100 * count / positive_image_count:6.2f}%)"
-    )
-
-
-# ============================================================
-# 6. Distribution bands
-# ============================================================
-
-heading("6. IMAGE-LEVEL CONFLICT BANDS")
-
-bands = [
-    ("0%", 0.00, 0.00),
-    (">0 - <10%", 0.00, 0.10),
-    ("10 - <25%", 0.10, 0.25),
-    ("25 - <50%", 0.25, 0.50),
-    ("50 - <75%", 0.50, 0.75),
-    (">=75%", 0.75, 1.01),
-]
-
-for name, lo, hi in bands:
-
-    if name == "0%":
-        count = sum(
-            x == 0
-            for x in water_fraction_per_image
-        )
-
-    elif name == ">0 - <10%":
-        count = sum(
-            0 < x < 0.10
-            for x in water_fraction_per_image
-        )
-
-    else:
-        count = sum(
-            lo <= x < hi
-            for x in water_fraction_per_image
-        )
-
-    print(
-        f"{name:12s}: "
-        f"{count:4d} "
-        f"({100 * count / positive_image_count:6.2f}%)"
-    )
-
-
-# ============================================================
-# 7. Base confidence
-# ============================================================
-
-heading("7. BASE CONFIDENCE ON CONFLICTING POSITIVE PIXELS")
-
-print(
-    "mean Base Water probability "
-    "on GSI-positive pixels that Base predicts Water:"
-)
-
-print(
-    f"  mean across images : "
-    f"{statistics.mean(water_prob_on_water_predicted_pixels):.4f}"
-)
-
-print(
-    f"  median across images: "
-    f"{statistics.median(water_prob_on_water_predicted_pixels):.4f}"
-)
-
-print()
-
-print(
-    "mean Base probabilities across ALL GSI-positive pixels:"
-)
-
-print(
-    f"  Water       : "
-    f"{statistics.mean(water_prob_on_all_positive_pixels):.4f}"
-)
-
-print(
-    f"  Agriculture : "
-    f"{statistics.mean(agri_prob_on_all_positive_pixels):.4f}"
-)
-
-
-# ============================================================
-# 8. Concentration of conflicting pixels
-# ============================================================
-
-heading("8. ARE WATER-CONFLICT PIXELS CONCENTRATED IN A FEW IMAGES?")
-
-pairs = sorted(
-    zip(
-        water_pixels_per_image,
-        positive_pixels_per_image,
-    ),
-    reverse=True,
-)
-
-water_total = sum(x for x, _ in pairs)
-
-for top_fraction in [
-    0.01,
-    0.05,
-    0.10,
-    0.25,
-    0.50,
-]:
-
-    n = max(
-        1,
-        round(
-            positive_image_count * top_fraction
-        )
-    )
-
-    contained = sum(
-        water
-        for water, _ in pairs[:n]
-    )
-
-    share = (
-        contained / water_total
-        if water_total
-        else 0
-    )
-
-    print(
-        f"top {100 * top_fraction:5.1f}% images "
-        f"contain {100 * share:6.2f}% "
-        f"of all Base-Water positive pixels"
-    )
-
-
-# ============================================================
-# 9. Interpretation
-# ============================================================
-
-heading("9. CONFLICT DISTRIBUTION SUMMARY")
-
-median_fraction = statistics.median(
-    water_fraction_per_image
-)
-
-p75 = percentile(
-    water_fraction_per_image,
-    0.75,
-)
-
-p90 = percentile(
-    water_fraction_per_image,
-    0.90,
-)
-
-high25 = sum(
-    x >= 0.25
-    for x in water_fraction_per_image
-)
-
-high50 = sum(
-    x >= 0.50
-    for x in water_fraction_per_image
-)
-
-
-print(
-    f"median Water conflict       : "
-    f"{pct(median_fraction)}"
-)
-
-print(
-    f"75th percentile             : "
-    f"{pct(p75)}"
-)
-
-print(
-    f"90th percentile             : "
-    f"{pct(p90)}"
-)
-
-print(
-    f"images >=25% conflict       : "
-    f"{high25} / {positive_image_count}"
-)
-
-print(
-    f"images >=50% conflict       : "
-    f"{high50} / {positive_image_count}"
-)
-
-print()
-
-
-if median_fraction >= 0.10:
-
-    print(
-        "PATTERN: DIRECT WATER/AGRICULTURE CONFLICT IS BROADLY DISTRIBUTED."
-    )
-
-    print(
-        "The conflict is not explained by only a small number of unusual images."
-    )
-
-elif p90 >= 0.25:
-
-    print(
-        "PATTERN: DIRECT CONFLICT IS STRONGLY CONCENTRATED IN A SUBSET OF IMAGES."
-    )
-
-    print(
-        "A minority of scenes may contain strong Water-like paddy appearance "
-        "and could dominate the decision-boundary shift."
-    )
-
-else:
-
-    print(
-        "PATTERN: MOST IMAGES HAVE RELATIVELY LOW IMAGE-LEVEL CONFLICT."
-    )
-
-    print(
-        "The overall 21% pixel-level conflict may be concentrated in large "
-        "positive regions or specific scene structures."
-    )
-
-
-print()
-
-print(
-    "This remains descriptive evidence. "
-    "Base-Water prediction does not establish true Water ground truth."
-)
