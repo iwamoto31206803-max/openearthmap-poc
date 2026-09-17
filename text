@@ -1,10 +1,677 @@
-python -m src.evaluation.evaluate_saclaj ^
-  --saclaj-csv C:\OpenEarthMap_PoC\data\saclaj\raw\Gref_DB_2025_06.csv ^
-  --mapping C:\OpenEarthMap_PoC\data\saclaj\saclaj_mapping.v0.1.json ^
-  --base-model C:\OpenEarthMap_PoC\OpenEarthMap-SAR\src\Semantic_Segemtation\pretrained\RGB_Real_5_u-efficientnet-b4.pth ^
-  --fine-tuned-model C:\OpenEarthMap_PoC\training_outputs\gsi_phase_a_v02\pilot\20260916T130118_489262Z_4a19e066\checkpoints\best.pth ^
-  --output-dir C:\OpenEarthMap_PoC\data\saclaj\results ^
-  --device cpu ^
-  --num-threads 2 ^
-  --max-samples-per-category 100 ^
-  --seed 42
+from pathlib import Path
+import csv
+import hashlib
+import json
+import subprocess
+
+
+# ============================================================
+# OpenEarthMap Phase A Minimal E2E
+# Evidence Closure / Evaluation Input Identity Check
+#
+# IMPORTANT:
+# - This script only READS local files.
+# - It does not modify manifests, checkpoints, results, or repository files.
+# - SACLAJ site IDs / coordinates are used locally for matching but are NOT printed.
+# ============================================================
+
+
+ROOT = Path(r"C:\OpenEarthMap_PoC")
+
+# ---- Training runs ----
+V01_TRAIN = (
+    ROOT
+    / "training_outputs"
+    / "gsi_phase_a"
+    / "20260916T012118_979625Z_69c3fa24"
+)
+
+V02_PREFLIGHT_ROOT = (
+    ROOT
+    / "training_outputs"
+    / "gsi_phase_a_v02"
+    / "preflight"
+)
+
+V02_SMOKE_ROOT = (
+    ROOT
+    / "training_outputs"
+    / "gsi_phase_a_v02"
+    / "smoke"
+)
+
+V02_TRAIN = (
+    ROOT
+    / "training_outputs"
+    / "gsi_phase_a_v02"
+    / "pilot"
+    / "20260916T130118_489262Z_4a19e066"
+)
+
+# ---- SACLAJ evaluation runs ----
+V01_EVAL = (
+    ROOT
+    / "data"
+    / "saclaj"
+    / "results"
+    / "20260916T100521_996447Z_ad671432"
+)
+
+V02_EVAL = (
+    ROOT
+    / "data"
+    / "saclaj"
+    / "results"
+    / "20260916T135520_362028Z_4a047f8d"
+)
+
+# ---- Original Base ----
+BASE = (
+    ROOT
+    / "OpenEarthMap-SAR"
+    / "src"
+    / "Semantic_Segemtation"
+    / "pretrained"
+    / "RGB_Real_5_u-efficientnet-b4.pth"
+)
+
+REPO = ROOT / "openearthmap-poc"
+
+
+def sha256(path: Path):
+    if not path.exists() or not path.is_file():
+        return None
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_json(path: Path):
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def latest_child(root: Path):
+    if not root.exists():
+        return None
+    dirs = [p for p in root.iterdir() if p.is_dir()]
+    if not dirs:
+        return None
+    return sorted(dirs, key=lambda p: p.name)[-1]
+
+
+def short_hash(value):
+    if not value:
+        return "MISSING"
+    return value[:12] + "..."
+
+
+def boolstr(x):
+    return "PASS" if x else "FAIL"
+
+
+def heading(text):
+    print()
+    print("=" * 72)
+    print(text)
+    print("=" * 72)
+
+
+def check_exists(name, path):
+    ok = path.exists()
+    print(f"{name:30s}: {boolstr(ok)}")
+    if not ok:
+        print(f"  missing path: {path}")
+    return ok
+
+
+def manifest_summary(name, run_dir, manifest_name="run_manifest.json"):
+    path = run_dir / manifest_name
+    data = load_json(path)
+
+    print()
+    print(f"[{name}]")
+
+    if data is None:
+        print("manifest: MISSING")
+        return None
+
+    print(f"run_id              : {data.get('run_id', 'NOT RECORDED')}")
+    print(f"status              : {data.get('status', 'NOT RECORDED')}")
+    print(f"training_mode       : {data.get('training_mode', 'N/A')}")
+    print(f"seed                : {data.get('seed', data.get('sampling_seed', 'N/A'))}")
+    print(f"train_count         : {data.get('train_count', 'N/A')}")
+    print(f"validation_count    : {data.get('validation_count', 'N/A')}")
+    print(f"excluded_all_ignore : {data.get('excluded_all_ignore_images', 'N/A')}")
+
+    base_hash = (
+        data.get("base_model_sha256")
+        or data.get("base_checkpoint_sha256")
+    )
+    print(f"Base SHA256         : {short_hash(base_hash)}")
+
+    return data
+
+
+def file_hash_compare(label, p1, p2):
+    h1 = sha256(p1)
+    h2 = sha256(p2)
+    ok = h1 is not None and h2 is not None and h1 == h2
+    print(f"{label:30s}: {boolstr(ok)}")
+    print(f"  v0.1: {short_hash(h1)}")
+    print(f"  v0.2: {short_hash(h2)}")
+    return ok
+
+
+def load_site_rows(path: Path):
+    rows = []
+    if not path.exists():
+        return rows
+
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            rows.append(row)
+    return rows
+
+
+def site_key(row):
+    # Sensitive fields are used ONLY locally for exact pairing.
+    # They are never printed.
+    return (
+        row.get("ID", ""),
+        row.get("Latitude", ""),
+        row.get("Longitude", ""),
+        row.get("Category_ID", ""),
+        row.get("subtype", ""),
+        row.get("expected_class", ""),
+    )
+
+
+def successful_map(rows):
+    result = {}
+    for row in rows:
+        if row.get("status") == "success":
+            result[site_key(row)] = row
+    return result
+
+
+def all_site_keys(rows):
+    return {site_key(r) for r in rows}
+
+
+# ============================================================
+# 0. Path existence
+# ============================================================
+
+heading("0. REQUIRED LOCAL ARTIFACTS")
+
+check_exists("v0.1 training run", V01_TRAIN)
+check_exists("v0.2 training run", V02_TRAIN)
+check_exists("v0.1 evaluation run", V01_EVAL)
+check_exists("v0.2 evaluation run", V02_EVAL)
+check_exists("Original Base", BASE)
+
+V02_PREFLIGHT = latest_child(V02_PREFLIGHT_ROOT)
+V02_SMOKE = latest_child(V02_SMOKE_ROOT)
+
+print(f"{'v0.2 preflight run':30s}: {'PASS' if V02_PREFLIGHT else 'FAIL'}")
+print(f"{'v0.2 smoke run':30s}: {'PASS' if V02_SMOKE else 'FAIL'}")
+
+
+# ============================================================
+# 1. Current repository state
+# ============================================================
+
+heading("1. CURRENT REPOSITORY STATE")
+
+try:
+    head = subprocess.check_output(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    print(f"current git HEAD      : {head}")
+except Exception:
+    print("current git HEAD      : COULD NOT READ")
+
+print(
+    "NOTE: current HEAD does NOT prove the exact commit used for historical runs "
+    "because git commit SHA was not stored in those manifests."
+)
+
+
+# ============================================================
+# 2. Run manifests / status
+# ============================================================
+
+heading("2. RUN MANIFEST STATUS")
+
+m_v01 = manifest_summary("v0.1 Pilot", V01_TRAIN)
+
+m_pre = None
+if V02_PREFLIGHT:
+    m_pre = manifest_summary("v0.2 Preflight", V02_PREFLIGHT)
+
+m_smoke = None
+if V02_SMOKE:
+    m_smoke = manifest_summary("v0.2 Smoke", V02_SMOKE)
+
+m_v02 = manifest_summary("v0.2 Pilot", V02_TRAIN)
+
+e_v01 = manifest_summary(
+    "SACLAJ Base/v0.1",
+    V01_EVAL,
+    "evaluation_manifest.json",
+)
+
+e_v02 = manifest_summary(
+    "SACLAJ Base/v0.2",
+    V02_EVAL,
+    "evaluation_manifest.json",
+)
+
+
+# ============================================================
+# 3. Original Base identity
+# ============================================================
+
+heading("3. ORIGINAL BASE IDENTITY")
+
+actual_base_hash = sha256(BASE)
+print(f"actual Base SHA256     : {actual_base_hash}")
+
+checks = []
+
+if m_v01:
+    h = m_v01.get("base_model_sha256")
+    ok = h == actual_base_hash
+    checks.append(ok)
+    print(f"v0.1 training Base     : {boolstr(ok)}")
+
+if m_v02:
+    h = m_v02.get("base_model_sha256")
+    ok = h == actual_base_hash
+    checks.append(ok)
+    print(f"v0.2 training Base     : {boolstr(ok)}")
+
+if e_v01:
+    h = e_v01.get("base_checkpoint_sha256")
+    ok = h == actual_base_hash
+    checks.append(ok)
+    print(f"v0.1 eval Base         : {boolstr(ok)}")
+
+if e_v02:
+    h = e_v02.get("base_checkpoint_sha256")
+    ok = h == actual_base_hash
+    checks.append(ok)
+    print(f"v0.2 eval Base         : {boolstr(ok)}")
+
+print(f"Base identity overall  : {boolstr(all(checks) if checks else False)}")
+
+
+# ============================================================
+# 4. Evaluation FT checkpoint identity
+# ============================================================
+
+heading("4. PILOT CHECKPOINT <-> EVALUATION IDENTITY")
+
+v01_best = V01_TRAIN / "checkpoints" / "best.pth"
+v02_best = V02_TRAIN / "checkpoints" / "best.pth"
+
+v01_best_hash = sha256(v01_best)
+v02_best_hash = sha256(v02_best)
+
+print(f"v0.1 best.pth SHA256   : {v01_best_hash}")
+print(f"v0.2 best.pth SHA256   : {v02_best_hash}")
+
+if e_v01:
+    eval_hash = e_v01.get("fine_tuned_checkpoint_sha256")
+    print(
+        "v0.1 eval uses Pilot   : "
+        + boolstr(eval_hash == v01_best_hash)
+    )
+
+if e_v02:
+    eval_hash = e_v02.get("fine_tuned_checkpoint_sha256")
+    print(
+        "v0.2 eval uses Pilot   : "
+        + boolstr(eval_hash == v02_best_hash)
+    )
+
+
+# Explicitly ensure v0.2 smoke checkpoint was NOT used
+if V02_SMOKE:
+    smoke_best = V02_SMOKE / "checkpoints" / "best.pth"
+    smoke_hash = sha256(smoke_best)
+
+    if e_v02:
+        eval_hash = e_v02.get("fine_tuned_checkpoint_sha256")
+        ok = smoke_hash is not None and eval_hash != smoke_hash
+        print(f"v0.2 eval NOT smoke    : {boolstr(ok)}")
+        print(f"smoke best SHA         : {short_hash(smoke_hash)}")
+
+
+# ============================================================
+# 5. Dataset / split identity
+# ============================================================
+
+heading("5. v0.1 <-> v0.2 DATASET / SPLIT IDENTITY")
+
+file_hash_compare(
+    "train_ids.json",
+    V01_TRAIN / "train_ids.json",
+    V02_TRAIN / "train_ids.json",
+)
+
+file_hash_compare(
+    "validation_ids.json",
+    V01_TRAIN / "validation_ids.json",
+    V02_TRAIN / "validation_ids.json",
+)
+
+# dataset inventory may exist under this name
+inv1 = V01_TRAIN / "dataset_inventory.csv"
+inv2 = V02_TRAIN / "dataset_inventory.csv"
+
+if inv1.exists() and inv2.exists():
+    file_hash_compare("dataset_inventory.csv", inv1, inv2)
+else:
+    print("dataset_inventory.csv         : NOT BOTH PRESENT")
+
+if m_v01 and m_v02:
+    comparable_fields = [
+        "seed",
+        "train_count",
+        "validation_count",
+        "excluded_all_ignore_images",
+        "train_ratio_requested",
+        "train_ratio_actual",
+    ]
+
+    for field in comparable_fields:
+        a = m_v01.get(field)
+        b = m_v02.get(field)
+        print(
+            f"{field:30s}: "
+            f"{boolstr(a == b)}  "
+            f"(v0.1={a}, v0.2={b})"
+        )
+
+
+# ============================================================
+# 6. Evaluation configuration identity
+# ============================================================
+
+heading("6. SACLAJ EVALUATION CONFIGURATION IDENTITY")
+
+if e_v01 and e_v02:
+    eval_fields = [
+        "saclaj_csv_sha256",
+        "category_mapping_sha256",
+        "category_definition_sha256",
+        "sampling_seed",
+        "max_samples_per_category",
+        "sampling_method",
+        "gsi_imagery_source",
+    ]
+
+    for field in eval_fields:
+        a = e_v01.get(field)
+        b = e_v02.get(field)
+        print(
+            f"{field:30s}: "
+            f"{boolstr(a == b)}"
+        )
+
+    print(
+        f"{'v0.1 eval status':30s}: "
+        f"{e_v01.get('status')}"
+    )
+    print(
+        f"{'v0.2 eval status':30s}: "
+        f"{e_v02.get('status')}"
+    )
+
+    print(
+        f"{'v0.1 outcomes':30s}: "
+        f"{e_v01.get('outcomes')}"
+    )
+    print(
+        f"{'v0.2 outcomes':30s}: "
+        f"{e_v02.get('outcomes')}"
+    )
+
+
+# ============================================================
+# 7. SACLAJ sampled / successful site identity
+# ============================================================
+
+heading("7. SACLAJ SITE SET IDENTITY")
+
+rows1 = load_site_rows(V01_EVAL / "site_results.csv")
+rows2 = load_site_rows(V02_EVAL / "site_results.csv")
+
+print(f"v0.1 rows              : {len(rows1)}")
+print(f"v0.2 rows              : {len(rows2)}")
+
+sites1 = all_site_keys(rows1)
+sites2 = all_site_keys(rows2)
+
+print(f"sampled site set same  : {boolstr(sites1 == sites2)}")
+print(f"only in v0.1           : {len(sites1 - sites2)}")
+print(f"only in v0.2           : {len(sites2 - sites1)}")
+
+success1 = successful_map(rows1)
+success2 = successful_map(rows2)
+
+success_keys1 = set(success1)
+success_keys2 = set(success2)
+
+print(f"v0.1 successful sites  : {len(success_keys1)}")
+print(f"v0.2 successful sites  : {len(success_keys2)}")
+print(
+    f"successful set same    : "
+    f"{boolstr(success_keys1 == success_keys2)}"
+)
+print(f"success only v0.1      : {len(success_keys1 - success_keys2)}")
+print(f"success only v0.2      : {len(success_keys2 - success_keys1)}")
+
+
+# ============================================================
+# 8. GSI patch identity between evaluation runs
+# ============================================================
+
+heading("8. GSI PATCH SHA256 IDENTITY")
+
+common = success_keys1 & success_keys2
+
+same_patch = 0
+different_patch = 0
+missing_hash = 0
+
+for key in common:
+    h1 = success1[key].get("patch_sha256", "")
+    h2 = success2[key].get("patch_sha256", "")
+
+    if not h1 or not h2:
+        missing_hash += 1
+    elif h1 == h2:
+        same_patch += 1
+    else:
+        different_patch += 1
+
+print(f"common successful sites: {len(common)}")
+print(f"same patch SHA256       : {same_patch}")
+print(f"different patch SHA256  : {different_patch}")
+print(f"missing patch SHA256    : {missing_hash}")
+
+patch_identity_pass = (
+    len(common) > 0
+    and different_patch == 0
+    and missing_hash == 0
+    and len(common) == len(success_keys1)
+    and len(common) == len(success_keys2)
+)
+
+print(
+    f"evaluation input same   : "
+    f"{boolstr(patch_identity_pass)}"
+)
+
+
+# ============================================================
+# 9. Subtype counts, without IDs / coordinates
+# ============================================================
+
+heading("9. SUCCESS COUNTS BY SUBTYPE")
+
+def subtype_counts(rows):
+    counts = {}
+    for row in rows:
+        if row.get("status") != "success":
+            continue
+        subtype = row.get("subtype", "UNKNOWN")
+        counts[subtype] = counts.get(subtype, 0) + 1
+    return counts
+
+
+c1 = subtype_counts(rows1)
+c2 = subtype_counts(rows2)
+
+all_subtypes = sorted(set(c1) | set(c2))
+
+for subtype in all_subtypes:
+    a = c1.get(subtype, 0)
+    b = c2.get(subtype, 0)
+    print(
+        f"{subtype:28s}: "
+        f"v0.1={a:3d}  v0.2={b:3d}  {boolstr(a == b)}"
+    )
+
+
+# ============================================================
+# 10. Environment / provenance fields
+# ============================================================
+
+heading("10. ENVIRONMENT / CODE PROVENANCE")
+
+if m_v01:
+    print("v0.1 versions:")
+    print(json.dumps(m_v01.get("versions"), ensure_ascii=False, indent=2))
+
+if m_v02:
+    print("v0.2 versions:")
+    print(json.dumps(m_v02.get("versions"), ensure_ascii=False, indent=2))
+
+for name, manifest in [
+    ("v0.1 training", m_v01),
+    ("v0.2 training", m_v02),
+    ("v0.1 evaluation", e_v01),
+    ("v0.2 evaluation", e_v02),
+]:
+    if manifest is None:
+        continue
+
+    commit_value = (
+        manifest.get("git_commit_sha")
+        or manifest.get("commit_sha")
+        or manifest.get("git_sha")
+    )
+
+    print(
+        f"{name:30s}: "
+        f"recorded commit SHA = "
+        f"{commit_value if commit_value else 'NOT RECORDED'}"
+    )
+
+
+# ============================================================
+# 11. Final evidence closure summary
+# ============================================================
+
+heading("11. EVIDENCE CLOSURE SUMMARY")
+
+base_ok = True
+
+if m_v01:
+    base_ok &= m_v01.get("base_model_sha256") == actual_base_hash
+if m_v02:
+    base_ok &= m_v02.get("base_model_sha256") == actual_base_hash
+if e_v01:
+    base_ok &= e_v01.get("base_checkpoint_sha256") == actual_base_hash
+if e_v02:
+    base_ok &= e_v02.get("base_checkpoint_sha256") == actual_base_hash
+
+v01_ckpt_ok = (
+    e_v01 is not None
+    and e_v01.get("fine_tuned_checkpoint_sha256") == v01_best_hash
+)
+
+v02_ckpt_ok = (
+    e_v02 is not None
+    and e_v02.get("fine_tuned_checkpoint_sha256") == v02_best_hash
+)
+
+split_ok = (
+    sha256(V01_TRAIN / "train_ids.json")
+    == sha256(V02_TRAIN / "train_ids.json")
+    and sha256(V01_TRAIN / "validation_ids.json")
+    == sha256(V02_TRAIN / "validation_ids.json")
+)
+
+site_ok = sites1 == sites2 and success_keys1 == success_keys2
+
+print(f"Original Base identity         : {boolstr(base_ok)}")
+print(f"v0.1 Pilot -> evaluation       : {boolstr(v01_ckpt_ok)}")
+print(f"v0.2 Pilot -> evaluation       : {boolstr(v02_ckpt_ok)}")
+print(f"v0.1/v0.2 split identity       : {boolstr(split_ok)}")
+print(f"SACLAJ site identity           : {boolstr(site_ok)}")
+print(f"GSI evaluation patch identity  : {boolstr(patch_identity_pass)}")
+
+statuses_ok = True
+
+if m_v01:
+    statuses_ok &= m_v01.get("status") == "completed"
+
+if m_pre:
+    statuses_ok &= m_pre.get("status") == "preflight_passed"
+
+if m_smoke:
+    statuses_ok &= m_smoke.get("status") == "smoke_test_completed"
+
+if m_v02:
+    statuses_ok &= m_v02.get("status") == "completed"
+
+if e_v01:
+    statuses_ok &= e_v01.get("status") == "completed"
+
+if e_v02:
+    statuses_ok &= e_v02.get("status") == "completed"
+
+print(f"Run status chain               : {boolstr(statuses_ok)}")
+
+overall = (
+    base_ok
+    and v01_ckpt_ok
+    and v02_ckpt_ok
+    and split_ok
+    and site_ok
+    and patch_identity_pass
+    and statuses_ok
+)
+
+print()
+print(f"EVIDENCE CLOSURE RESULT        : {boolstr(overall)}")
+
+print()
+print(
+    "NOTE: Historical execution commit SHA cannot be fully closed "
+    "if it was not recorded in the run manifest."
+)
+
+print(
+    "No SACLAJ IDs, coordinates, or site-level predictions were printed "
+    "by this script."
+)
