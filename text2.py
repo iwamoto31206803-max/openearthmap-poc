@@ -1,52 +1,83 @@
 from pathlib import Path
+
+import numpy as np
 from PIL import Image
 
+
 root = Path(r"C:\OpenEarthMap_PoC\data\gsi\raw\water_572")
-org_dir = root / "org"
-val_dir = root / "val"
 
-mismatches = []
-missing_val = []
-checked = 0
+org_path = root / "org" / "554.png"
+val_path = root / "val" / "554.png"
 
-for org_path in sorted(org_dir.glob("*.png")):
-    val_path = val_dir / org_path.name
+with Image.open(org_path) as img:
+    org = np.asarray(img.convert("RGB"))
 
-    if not val_path.exists():
-        missing_val.append(org_path.name)
-        continue
+with Image.open(val_path) as img:
+    val = np.asarray(img.convert("RGB"))
 
-    with Image.open(org_path) as img:
-        org_size = img.size
+print("org shape =", org.shape)
+print("val shape =", val.shape)
+print()
 
-    with Image.open(val_path) as img:
-        val_size = img.size
+label_color = np.array([0, 0, 255], dtype=np.uint8)
 
-    checked += 1
+results = []
 
-    if org_size != val_size:
-        mismatches.append(
-            {
-                "name": org_path.name,
-                "org_size": org_size,
-                "val_size": val_size,
-            }
+# 574 -> 572 なので、開始位置は縦横それぞれ 0, 1, 2 の9通り
+for top in range(3):
+    for left in range(3):
+        crop = val[top:top + 572, left:left + 572]
+
+        positive = np.all(crop == label_color, axis=2)
+
+        # GSI valはラベル部分以外ではorgと同じであることを期待する。
+        mismatch = np.any(org != crop, axis=2)
+
+        # 青ラベル以外でorgと異なる画素数
+        non_label_mismatch = mismatch & ~positive
+
+        positive_count = int(positive.sum())
+        mismatch_count = int(mismatch.sum())
+        non_label_mismatch_count = int(non_label_mismatch.sum())
+
+        results.append(
+            (
+                non_label_mismatch_count,
+                top,
+                left,
+                positive_count,
+                mismatch_count,
+            )
         )
 
-print("pairs checked =", checked)
-print("missing val =", len(missing_val))
-print("size mismatches =", len(mismatches))
+results.sort()
 
-if missing_val:
-    print("\nMissing val files:")
-    for name in missing_val[:50]:
-        print(name)
+print("Candidates sorted by non-label mismatch:")
+print()
+print(
+    "non_label_mismatch | top | left | blue_positive | all_mismatch"
+)
 
-if mismatches:
-    print("\nSize mismatches:")
-    for item in mismatches[:50]:
-        print(
-            item["name"],
-            "org =", item["org_size"],
-            "val =", item["val_size"],
-        )
+for (
+    non_label_mismatch_count,
+    top,
+    left,
+    positive_count,
+    mismatch_count,
+) in results:
+    print(
+        f"{non_label_mismatch_count:18d} |"
+        f" {top:3d} |"
+        f" {left:4d} |"
+        f" {positive_count:13d} |"
+        f" {mismatch_count:12d}"
+    )
+
+best = results[0]
+
+print()
+print("BEST CANDIDATE")
+print("top =", best[1])
+print("left =", best[2])
+print("non_label_mismatch =", best[0])
+print("blue_positive =", best[3])
