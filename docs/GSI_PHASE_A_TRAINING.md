@@ -4,6 +4,10 @@
 明示的なv0.2モード、preflight / 1-step smoke / 1 epoch Pilotについては
 [Base-Preservation Fine-tuning v0.2](BASE_PRESERVATION_FINETUNING.md)を参照してください。
 
+all-ignore / FALSE画像をpreservation-only replayに追加する明示的なv0.3は
+[Phase A v0.3](REPLAY_PRESERVATION_V03.md)を参照してください。original Baseから開始し、
+v0.2のpositive split・CE/unknown KLを維持します。FALSEはAgriculture-negative教師ではありません。
+
 目的は `Base model → GSI paddy partial-label fine-tuning → checkpoint` を
 再現可能・監査可能な形で一度成立させることです。production modelの作成や、
 精度向上の証明は目的としません。SACLAJによるBase vs Fine-tuned評価は別工程です。
