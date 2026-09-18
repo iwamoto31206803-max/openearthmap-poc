@@ -1,5 +1,8 @@
 # PoC Status — 2026-09-12
 
+> **Historical snapshot:** This document reflects the project as of 2026-09-12.
+> For current project status and next priorities, see [Current Status](CURRENT_STATUS.md).
+
 ## 1. 目的
 
 任意の対象範囲について国土地理院（GSI）の航空写真を取得し、
