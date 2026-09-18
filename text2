@@ -1,0 +1,520 @@
+cd /d C:\OpenEarthMap_PoC\openearthmap-poc
+
+call C:\OpenEarthMap_PoC\.venv\Scripts\activate.bat
+
+python -m src.training.prepare_gsi_labels ^
+  C:\OpenEarthMap_PoC\data\gsi\raw\water_07 ^
+  C:\OpenEarthMap_PoC\data\gsi\prepared\water_07 ^
+  --gsi-category water ^
+  --oem-class-id 6 ^
+  --label-color 0,0,255
+
+
+
+
+  image_count
+positive_pixel_count
+total_pixel_count
+positive_pixel_ratio
+false_image_count
+
+inspection:
+  pairing_valid
+  size_mismatch_count
+  non_label_mismatch_count
+  org_exact_label_color_count
+
+label_color_rgb
+oem_class_id
+oem_class_name
+
+
+
+
+C:\tokyo-lidar-treeheight\scripts\download_meta_chmv2.py
+
+
+from pathlib import Path
+import sys
+
+import boto3
+from botocore import UNSIGNED
+from botocore.config import Config
+
+import geopandas as gpd
+import numpy as np
+import rasterio
+from rasterio.merge import merge
+from rasterio.warp import reproject, Resampling
+from shapely.geometry import box
+
+
+# ============================================================
+# Meta CHMv2 downloader / aligner
+#
+# Purpose:
+#   1. Use the LiDAR-derived CHM as the target grid.
+#   2. Find Meta CHMv2 tiles intersecting the target extent.
+#   3. Download only required CHMv2 tiles from public AWS S3.
+#   4. Mosaic them.
+#   5. Reproject/resample them exactly onto the LiDAR 1 m grid.
+#
+# Project:
+#   C:\tokyo-lidar-treeheight
+# ============================================================
+
+
+PROJECT = Path(r"C:\tokyo-lidar-treeheight")
+
+TEMPLATE = (
+    PROJECT
+    / "02_work"
+    / "09LD3451_CHM_tree_max_1m.tif"
+)
+
+WORK_DIR = (
+    PROJECT
+    / "02_work"
+    / "meta_chmv2"
+)
+
+CACHE_DIR = WORK_DIR / "cache"
+
+OUTPUT = (
+    WORK_DIR
+    / "Meta_CHMv2_09LD3451_1m.tif"
+)
+
+
+# ============================================================
+# Meta CHMv2 public AWS dataset
+# ============================================================
+
+BUCKET = "dataforgood-fb-data"
+
+ROOT = (
+    "forests/v2/global/"
+    "dinov3_global_chm_v2_ml3"
+)
+
+TILE_INDEX_KEY = f"{ROOT}/tiles.geojson"
+CHM_DIR = f"{ROOT}/chm"
+
+
+# ============================================================
+# Helper functions
+# ============================================================
+
+def stop(message):
+    print("\nERROR:")
+    print(message)
+    sys.exit(1)
+
+
+def find_tile_id_column(gdf):
+    """
+    Meta's tile index contains an identifier for each CHMv2 tile.
+    Try common field names so the script is robust to small schema changes.
+    """
+
+    candidates = [
+        "tile",
+        "quadkey",
+        "quad_key",
+        "tile_id",
+        "tileid",
+        "id",
+    ]
+
+    lower_lookup = {
+        str(col).lower(): col
+        for col in gdf.columns
+    }
+
+    for candidate in candidates:
+        if candidate.lower() in lower_lookup:
+            return lower_lookup[candidate.lower()]
+
+    # If no known name is found, show columns for troubleshooting.
+    raise RuntimeError(
+        "Could not identify CHMv2 tile ID field.\n"
+        f"Available columns: {list(gdf.columns)}"
+    )
+
+
+# ============================================================
+# Initial checks
+# ============================================================
+
+print("=" * 70)
+print("Meta / WRI Canopy Height Map v2")
+print("Komae PoC downloader")
+print("=" * 70)
+
+if not TEMPLATE.exists():
+    stop(
+        f"Template raster does not exist:\n{TEMPLATE}"
+    )
+
+WORK_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ============================================================
+# Read LiDAR template raster
+# ============================================================
+
+print("\n[1/6] Reading LiDAR CHM template...")
+
+with rasterio.open(TEMPLATE) as ref:
+
+    if ref.crs is None:
+        stop("Template raster has no CRS.")
+
+    target_crs = ref.crs
+    target_transform = ref.transform
+    target_width = ref.width
+    target_height = ref.height
+    target_bounds = ref.bounds
+
+    template_profile = ref.profile.copy()
+
+    xres = abs(ref.transform.a)
+    yres = abs(ref.transform.e)
+
+
+print(f"Template : {TEMPLATE}")
+print(f"CRS      : {target_crs}")
+print(f"Size     : {target_width} x {target_height}")
+print(f"Pixel    : {xres:.6f} x {yres:.6f} m")
+print(
+    "Bounds   : "
+    f"{target_bounds.left:.3f}, "
+    f"{target_bounds.bottom:.3f}, "
+    f"{target_bounds.right:.3f}, "
+    f"{target_bounds.top:.3f}"
+)
+
+
+# ============================================================
+# Connect anonymously to public S3
+# ============================================================
+
+print("\n[2/6] Connecting to Meta public AWS dataset...")
+
+s3 = boto3.client(
+    "s3",
+    region_name="us-east-1",
+    config=Config(
+        signature_version=UNSIGNED
+    ),
+)
+
+
+# ============================================================
+# Download / read tile index
+# ============================================================
+
+tile_index_path = CACHE_DIR / "tiles.geojson"
+
+if not tile_index_path.exists():
+
+    print("Downloading tiles.geojson...")
+    print("This is relatively large and may take a little while.")
+
+    try:
+        s3.download_file(
+            BUCKET,
+            TILE_INDEX_KEY,
+            str(tile_index_path),
+        )
+
+    except Exception as e:
+        stop(
+            "Failed to download CHMv2 tile index.\n"
+            f"{e}"
+        )
+
+else:
+    print("Using cached tiles.geojson.")
+
+
+print("Reading tile index...")
+
+try:
+    tiles = gpd.read_file(tile_index_path)
+
+except Exception as e:
+    stop(
+        "Could not read tiles.geojson.\n"
+        f"{e}"
+    )
+
+if tiles.empty:
+    stop("CHMv2 tile index is empty.")
+
+if tiles.crs is None:
+    stop("CHMv2 tile index has no CRS.")
+
+
+tile_id_column = find_tile_id_column(tiles)
+
+print(f"Tile index CRS : {tiles.crs}")
+print(f"Tile ID field  : {tile_id_column}")
+print(f"Indexed tiles  : {len(tiles):,}")
+
+
+# ============================================================
+# Find CHMv2 tiles intersecting template extent
+# ============================================================
+
+print("\n[3/6] Finding CHMv2 tiles intersecting LiDAR extent...")
+
+template_geom = gpd.GeoDataFrame(
+    {"id": [1]},
+    geometry=[
+        box(
+            target_bounds.left,
+            target_bounds.bottom,
+            target_bounds.right,
+            target_bounds.top,
+        )
+    ],
+    crs=target_crs,
+)
+
+template_in_tile_crs = template_geom.to_crs(tiles.crs)
+
+roi = template_in_tile_crs.geometry.iloc[0]
+
+# Spatial-index-assisted query when available.
+try:
+    candidate_idx = list(
+        tiles.sindex.query(
+            roi,
+            predicate="intersects",
+        )
+    )
+
+    selected = tiles.iloc[candidate_idx].copy()
+
+except Exception:
+    # Safe fallback.
+    selected = tiles[
+        tiles.geometry.intersects(roi)
+    ].copy()
+
+
+if selected.empty:
+    stop(
+        "No Meta CHMv2 tile intersects "
+        "the LiDAR template extent."
+    )
+
+
+tile_ids = [
+    str(v)
+    for v in selected[tile_id_column].tolist()
+]
+
+
+print(f"Intersecting tiles: {len(tile_ids)}")
+
+for tile_id in tile_ids:
+    print(f"  {tile_id}")
+
+
+# ============================================================
+# Download required CHMv2 COG tiles
+# ============================================================
+
+print("\n[4/6] Downloading required CHMv2 tile(s)...")
+
+local_tile_paths = []
+
+for tile_id in tile_ids:
+
+    # Normalise IDs which may have been interpreted as numbers.
+    tile_id = tile_id.strip()
+
+    if tile_id.endswith(".0"):
+        tile_id = tile_id[:-2]
+
+    s3_key = f"{CHM_DIR}/{tile_id}.tif"
+    local_path = CACHE_DIR / f"{tile_id}.tif"
+
+    if not local_path.exists():
+
+        print(f"Downloading {tile_id}.tif")
+
+        try:
+            s3.download_file(
+                BUCKET,
+                s3_key,
+                str(local_path),
+            )
+
+        except Exception as e:
+            stop(
+                "Failed to download CHMv2 tile:\n"
+                f"s3://{BUCKET}/{s3_key}\n\n"
+                f"{e}"
+            )
+
+    else:
+        print(f"Using cached {tile_id}.tif")
+
+    local_tile_paths.append(local_path)
+
+
+# ============================================================
+# Mosaic CHMv2 source tiles
+# ============================================================
+
+print("\n[5/6] Mosaicking and aligning CHMv2...")
+
+datasets = []
+
+try:
+
+    for path in local_tile_paths:
+        datasets.append(
+            rasterio.open(path)
+        )
+
+    source_crs = datasets[0].crs
+
+    if source_crs is None:
+        stop("Downloaded CHMv2 raster has no CRS.")
+
+    print(f"CHMv2 source CRS: {source_crs}")
+
+    mosaic, mosaic_transform = merge(
+        datasets
+    )
+
+    source = mosaic[0].astype(np.float32)
+
+    source_nodata = datasets[0].nodata
+
+finally:
+
+    for ds in datasets:
+        ds.close()
+
+
+# ============================================================
+# Reproject to exact LiDAR grid
+# ============================================================
+
+destination = np.full(
+    (target_height, target_width),
+    np.nan,
+    dtype=np.float32,
+)
+
+
+reproject(
+    source=source,
+    destination=destination,
+
+    src_transform=mosaic_transform,
+    src_crs=source_crs,
+    src_nodata=source_nodata,
+
+    dst_transform=target_transform,
+    dst_crs=target_crs,
+    dst_nodata=np.nan,
+
+    # Canopy height is continuous.
+    resampling=Resampling.bilinear,
+)
+
+
+# Heights below zero are not meaningful for CHM.
+destination[
+    np.isfinite(destination)
+    & (destination < 0)
+] = 0.0
+
+
+# ============================================================
+# Save aligned GeoTIFF
+# ============================================================
+
+print("\n[6/6] Writing output GeoTIFF...")
+
+profile = template_profile.copy()
+
+profile.update(
+    driver="GTiff",
+    width=target_width,
+    height=target_height,
+    transform=target_transform,
+    crs=target_crs,
+
+    count=1,
+    dtype="float32",
+
+    nodata=np.nan,
+
+    compress="deflate",
+    predictor=3,
+    tiled=True,
+    BIGTIFF="IF_SAFER",
+)
+
+
+with rasterio.open(
+    OUTPUT,
+    "w",
+    **profile,
+) as dst:
+
+    dst.write(
+        destination,
+        1,
+    )
+
+    dst.set_band_description(
+        1,
+        "Meta_CHMv2_canopy_height_m"
+    )
+
+    dst.update_tags(
+        source="Meta/WRI Canopy Height Maps v2",
+        unit="metre",
+        processing=(
+            "Reprojected and resampled to "
+            "09LD3451 LiDAR CHM grid"
+        ),
+    )
+
+
+# ============================================================
+# QA summary
+# ============================================================
+
+valid = np.isfinite(destination)
+
+print("\n" + "=" * 70)
+
+if valid.any():
+
+    values = destination[valid]
+
+    print("SUCCESS")
+    print(f"Output       : {OUTPUT}")
+    print(f"Valid cells  : {values.size:,}")
+    print(f"Minimum      : {values.min():.3f} m")
+    print(f"Mean         : {values.mean():.3f} m")
+    print(f"Median       : {np.median(values):.3f} m")
+    print(f"Maximum      : {values.max():.3f} m")
+
+else:
+
+    print("WARNING")
+    print("Output was written, but no valid CHMv2 pixels were found.")
+
+
+print("=" * 70)
