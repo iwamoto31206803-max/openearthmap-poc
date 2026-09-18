@@ -1,83 +1,123 @@
 from pathlib import Path
-
-import numpy as np
 from PIL import Image
+import hashlib
+import json
+import os
 
 
-root = Path(r"C:\OpenEarthMap_PoC\data\gsi\raw\water_572")
+src = Path(r"C:\OpenEarthMap_PoC\data\gsi\raw\water_572")
+dst = Path(r"C:\OpenEarthMap_PoC\data\gsi\working\water_572_fixed")
 
-org_path = root / "org" / "554.png"
-val_path = root / "val" / "554.png"
+repair_file = "554.png"
 
-with Image.open(org_path) as img:
-    org = np.asarray(img.convert("RGB"))
 
-with Image.open(val_path) as img:
-    val = np.asarray(img.convert("RGB"))
+def sha256(path):
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
 
-print("org shape =", org.shape)
-print("val shape =", val.shape)
-print()
 
-label_color = np.array([0, 0, 255], dtype=np.uint8)
+for subdir in ["org", "val"]:
+    (dst / subdir).mkdir(parents=True, exist_ok=True)
 
-results = []
+    for src_path in sorted((src / subdir).glob("*.png")):
+        dst_path = dst / subdir / src_path.name
 
-# 574 -> 572 なので、開始位置は縦横それぞれ 0, 1, 2 の9通り
-for top in range(3):
-    for left in range(3):
-        crop = val[top:top + 572, left:left + 572]
+        if dst_path.exists():
+            continue
 
-        positive = np.all(crop == label_color, axis=2)
+        # val/554.png だけ修正
+        if subdir == "val" and src_path.name == repair_file:
+            with Image.open(src_path) as img:
+                img = img.convert("RGB")
 
-        # GSI valはラベル部分以外ではorgと同じであることを期待する。
-        mismatch = np.any(org != crop, axis=2)
+                if img.size != (574, 574):
+                    raise ValueError(
+                        f"Unexpected source size for {src_path}: {img.size}"
+                    )
 
-        # 青ラベル以外でorgと異なる画素数
-        non_label_mismatch = mismatch & ~positive
+                corrected = img.crop((0, 0, 572, 572))
+                corrected.save(dst_path)
 
-        positive_count = int(positive.sum())
-        mismatch_count = int(mismatch.sum())
-        non_label_mismatch_count = int(non_label_mismatch.sum())
+        else:
+            # 同一ドライブなのでhard linkを使用。
+            # rawデータそのものは変更しない。
+            os.link(src_path, dst_path)
 
-        results.append(
-            (
-                non_label_mismatch_count,
-                top,
-                left,
-                positive_count,
-                mismatch_count,
-            )
+
+src_org = src / "org" / repair_file
+src_val = src / "val" / repair_file
+dst_org = dst / "org" / repair_file
+dst_val = dst / "val" / repair_file
+
+with Image.open(src_val) as img:
+    original_val_size = img.size
+
+with Image.open(dst_val) as img:
+    corrected_val_size = img.size
+
+with Image.open(dst_org) as img:
+    corrected_org_size = img.size
+
+
+repair_manifest = {
+    "source_dataset": str(src),
+    "working_dataset": str(dst),
+    "repair": {
+        "file": repair_file,
+        "reason": "GSI distributed val image is 574x574 while paired org is 572x572",
+        "source_val_size": list(original_val_size),
+        "corrected_val_size": list(corrected_val_size),
+        "crop": {
+            "left": 0,
+            "top": 0,
+            "right_exclusive": 572,
+            "bottom_exclusive": 572,
+        },
+        "diagnostic": {
+            "non_label_mismatch_after_crop": 0,
+            "blue_positive_pixel_count": 12570,
+        },
+        "source_org_sha256": sha256(src_org),
+        "source_val_sha256": sha256(src_val),
+        "corrected_val_sha256": sha256(dst_val),
+    },
+}
+
+with (dst / "repair_manifest.json").open(
+    "w", encoding="utf-8"
+) as f:
+    json.dump(repair_manifest, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+
+
+# 最終サイズ監査
+mismatches = []
+
+for org_path in sorted((dst / "org").glob("*.png")):
+    val_path = dst / "val" / org_path.name
+
+    with Image.open(org_path) as o:
+        org_size = o.size
+
+    with Image.open(val_path) as v:
+        val_size = v.size
+
+    if org_size != val_size:
+        mismatches.append(
+            (org_path.name, org_size, val_size)
         )
 
-results.sort()
 
-print("Candidates sorted by non-label mismatch:")
-print()
-print(
-    "non_label_mismatch | top | left | blue_positive | all_mismatch"
-)
+print("working dataset =", dst)
+print("repair file =", repair_file)
+print("original val size =", original_val_size)
+print("corrected val size =", corrected_val_size)
+print("org size =", corrected_org_size)
+print("size mismatches after repair =", len(mismatches))
+print("repair manifest =", dst / "repair_manifest.json")
 
-for (
-    non_label_mismatch_count,
-    top,
-    left,
-    positive_count,
-    mismatch_count,
-) in results:
-    print(
-        f"{non_label_mismatch_count:18d} |"
-        f" {top:3d} |"
-        f" {left:4d} |"
-        f" {positive_count:13d} |"
-        f" {mismatch_count:12d}"
-    )
-
-best = results[0]
-
-print()
-print("BEST CANDIDATE")
-print("top =", best[1])
-print("left =", best[2])
-print("non_label_mismatch =", best[0])
-print("blue_positive =", best[3])
+if mismatches:
+    print(mismatches[:20])
