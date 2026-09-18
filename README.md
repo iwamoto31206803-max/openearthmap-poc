@@ -110,9 +110,15 @@ Category_ID単位の確定mappingを同梱しています。templateへ配布REA
 まずoffline preflightを実行します。Category_detailは補足情報としてのみ扱います。
 SACLAJの実CSV・座標・地点ID・地点別結果はリポジトリ外の会社PCローカル限定です。
 
-manual GTなしで実施したteacher preparation → fine-tuning → independent SACLAJ evaluationの
+manual GTなしで実施したteacher preparation → fine-tuning → SACLAJ development evaluationの
 一区切りは、[Phase A Minimal End-to-End 実験記録](docs/PHASE_A_MINIMAL_E2E_SUMMARY.md)に
 まとめています。これはproduction modelの成果報告ではありません。
+
+Phase A v0.3のpreservation-only replay 1 epoch Pilotと固定SACLAJ development
+sampleでの評価は完了しました。実行結果と制約は上記の
+[Phase A実験記録](docs/PHASE_A_MINIMAL_E2E_SUMMARY.md)および
+[Replay-Preservation v0.3](docs/REPLAY_PRESERVATION_V03.md)を参照してください。
+v0.3はdevelopment evaluation上の候補であり、production readinessは未確認です。
 
 ## Model / license note
 
