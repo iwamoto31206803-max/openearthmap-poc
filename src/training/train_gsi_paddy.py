@@ -1,4 +1,4 @@
-"""Phase A pilot: GSI paddy positive-only v0.1 / Base-preservation v0.2."""
+"""Phase A: positive-only v0.1 / Base-preservation v0.2 / all-ignore replay v0.3."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from src.training.base_preservation import (
     LIMITATIONS, build_teacher, provenance, run_preservation_epoch, validate_distillation,
 )
 from src.training.prepare_gsi_labels import IGNORE_INDEX, _sha256
+from src.training import replay_preservation as replay
 
 
 def write_json(path: Path, value) -> None:
@@ -136,9 +137,14 @@ def resolve_device(value: str) -> str:
 
 
 def train(args) -> Path:
-    preserving = args.training_mode == "base_preservation"
+    replaying = args.training_mode == "base_preservation_replay"
+    preserving = args.training_mode in {"base_preservation", "base_preservation_replay"}
     epochs = args.epochs if args.epochs is not None else (1 if preserving else 3)
     validate_distillation(args.lambda_preserve, args.temperature)
+    if replaying:
+        replay.validate_replay(args.lambda_preserve, args.temperature, args.alpha_replay)
+        if args.seed != 42 or args.train_ratio != 0.8:
+            raise ValueError("v0.3 requires the v0.2 Pilot positive split: seed=42, train-ratio=0.8")
     if args.smoke_test and epochs != 1:
         raise ValueError("--smoke-test requires --epochs 1 (one optimizer step total)")
     if epochs < 1 or args.batch_size < 1 or args.num_threads < 1:
@@ -171,12 +177,20 @@ def train(args) -> Path:
     if any(prepared.get(key) != count for key, count in actual.items()):
         raise ValueError("Prepared manifest counts do not match current dataset; regenerate/audit labels")
     train_samples, validation_samples = split_samples(usable, args.train_ratio, args.seed)
+    if replaying:
+        if (len(usable), len(excluded)) != replay.PILOT_COUNTS:
+            raise ValueError(f"v0.3 Pilot requires positive/all-ignore counts {replay.PILOT_COUNTS}")
+        replay_train, replay_validation = replay.replay_splits(
+            train_samples, validation_samples, excluded, args.seed,
+        )
     model = build_model(base_path, device=device)
     counts = freeze_encoder(model)
     optimizer = make_optimizer(model, args.learning_rate)
     teacher = build_teacher(base_path, device) if preserving else None
     if _sha256(base_path) != base_sha:
         raise ValueError("Base checkpoint changed during model loading")
+    if replaying:
+        replay.check_model_invariants(model, teacher, optimizer, initial=True)
     epoch_runner = partial(
         run_preservation_epoch, teacher=teacher,
         lambda_preserve=args.lambda_preserve, temperature=args.temperature,
@@ -189,7 +203,8 @@ def train(args) -> Path:
 
     timestamp = datetime.now(timezone.utc)
     run_id = timestamp.strftime("%Y%m%dT%H%M%S_%fZ") + "_" + uuid.uuid4().hex[:8]
-    run_dir = args.output_dir.resolve() / run_id
+    output_dir = args.output_dir or Path("training_outputs/gsi_phase_a_v03" if replaying else "runs/gsi_phase_a")
+    run_dir = output_dir.resolve() / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     # Protect outputs even when a caller chooses a custom directory inside a repo.
     (run_dir / ".gitignore").write_text("*\n", encoding="utf-8")
@@ -260,34 +275,92 @@ def train(args) -> Path:
     if preserving:
         manifest.update(schema_version=2, **provenance(base_sha, args.lambda_preserve, args.temperature))
         manifest["known_limitations"].extend(LIMITATIONS)
+    if replaying:
+        write_json(run_dir / "replay_train_ids.json", [s.source_image_id for s in replay_train])
+        write_json(run_dir / "replay_validation_ids.json", [s.source_image_id for s in replay_validation])
+        manifest.update(
+            schema_version=3, model_version="gsi_phase_a_v0.3",
+            training_mode=args.training_mode, alpha_replay=args.alpha_replay,
+            git_commit_sha=replay.current_git_commit(), best_checkpoint_sha256=None,
+            positive_train_count=len(train_samples), positive_validation_count=len(validation_samples),
+            replay_train_count=len(replay_train), replay_validation_count=len(replay_validation),
+            replay_train_image_ids="replay_train_ids.json",
+            replay_validation_image_ids="replay_validation_ids.json",
+            replay_split_seed=args.seed, replay_train_ratio=0.8,
+            all_ignore_usage="excluded from positive CE; included as preservation-only replay",
+            loss="mean_P CE + lambda_preserve * T^2 * mean_U KL + alpha_replay * lambda_preserve * T^2 * mean_R KL",
+            replay_loss_normalization="sum over 9 classes, mean over real replay pixels; multiply by T^2; no CE",
+            replay_mask_definition="all real image pixels; synthetic padding excluded",
+            epoch_loss_aggregation="independent pixel-weighted means for P, U, R, then combine with lambda and alpha",
+            replay_batching="one positive + one replay batch; one backward/step; positive loader defines epoch; restart exhausted replay loader deterministically",
+            replay_validation="each positive and replay validation sample exactly once (one batch each in preflight/smoke)",
+        )
+        for prefix, filename in (
+            ("positive_train", "train_ids.json"), ("positive_validation", "validation_ids.json"),
+            ("replay_train", "replay_train_ids.json"), ("replay_validation", "replay_validation_ids.json"),
+        ):
+            manifest[prefix + "_ids_sha256"] = _sha256(run_dir / filename)
+        manifest["known_limitations"] = [
+            text.replace("v0.2 is", "v0.3 is") for text in manifest["known_limitations"]
+        ] + ["All-ignore replay supplies neither Water ground truth nor Agriculture-negative labels.",
+             "SACLAJ evaluation remains development evaluation, not final acceptance."]
     manifest_path = run_dir / "run_manifest.json"
     write_json(manifest_path, manifest)
     print(f"Run output: {run_dir}", flush=True)
+    collate_fn = replay.checked_collate if replaying else collate_preservation if preserving else collate_padded
     train_loader = DataLoader(
         GsiPaddyDataset(train_samples), batch_size=args.batch_size, shuffle=True,
         generator=torch.Generator().manual_seed(args.seed), num_workers=0,
-        collate_fn=collate_preservation if preserving else collate_padded,
+        collate_fn=collate_fn,
     )
     validation_loader = DataLoader(
         GsiPaddyDataset(validation_samples), batch_size=args.batch_size, shuffle=False,
-        num_workers=0, collate_fn=collate_preservation if preserving else collate_padded,
+        num_workers=0, collate_fn=collate_fn,
     )
+    if replaying:
+        replay_loaders = {
+            "train": DataLoader(
+                replay.GsiReplayDataset(replay_train), batch_size=args.batch_size, shuffle=True,
+                generator=torch.Generator().manual_seed(args.seed), num_workers=0,
+                collate_fn=collate_fn,
+            ),
+            "validation": DataLoader(
+                replay.GsiReplayDataset(replay_validation), batch_size=args.batch_size, shuffle=False,
+                generator=torch.Generator().manual_seed(args.seed), num_workers=0,
+                collate_fn=collate_fn,
+            ),
+        }
+
+    def execute_epoch(loader, *, training=False):
+        if not replaying:
+            return epoch_runner(model, loader, device, optimizer if training else None)
+        # Preflight train_sample uses the training replay split, with no update.
+        split = "train" if training or loader is train_loader else "validation"
+        replay_loader = replay_loaders[split]
+        if args.preflight or args.smoke_test:
+            loader, replay_loader = islice(loader, 1), list(islice(replay_loader, 1))
+        return replay.run_replay_epoch(
+            model, loader, device, optimizer if training else None,
+            teacher=teacher, replay_loader=replay_loader,
+            lambda_preserve=args.lambda_preserve, temperature=args.temperature,
+            alpha=args.alpha_replay, verify_smoke=args.smoke_test and training,
+        )
+
     try:
         if args.preflight:
             # Full dataset/split/checkpoint audit above, one forward batch per split.
             # No optimizer step and no checkpoint; exercise the actual objective.
             manifest["preflight_metrics"] = {
-                "train_sample": epoch_runner(model, islice(train_loader, 1), device),
-                "validation_sample": epoch_runner(model, islice(validation_loader, 1), device),
+                "train_sample": execute_epoch(train_loader if replaying else islice(train_loader, 1)),
+                "validation_sample": execute_epoch(validation_loader if replaying else islice(validation_loader, 1)),
             }
             manifest.update(status="preflight_passed")
             print("Preflight passed: full audit, one forward batch per split; no training.", flush=True)
             return run_dir
         for epoch in range(1, epochs + 1):
-            training = epoch_runner(model, islice(train_loader, 1) if args.smoke_test else train_loader,
-                                    device, optimizer)
-            validation = epoch_runner(model, islice(validation_loader, 1) if args.smoke_test else validation_loader,
-                                      device)
+            training = execute_epoch(islice(train_loader, 1) if args.smoke_test and not replaying else train_loader,
+                                     training=True)
+            validation = execute_epoch(islice(validation_loader, 1) if args.smoke_test and not replaying else validation_loader)
             relative = f"checkpoints/epoch_{epoch:03d}.pth"
             save_checkpoint(run_dir / relative, model)
             metric = {"epoch": epoch, "training": training, "validation": validation,
@@ -298,6 +371,8 @@ def train(args) -> Path:
                 shutil.copyfile(run_dir / relative, run_dir / "checkpoints/best.pth")
                 manifest.update(best_checkpoint="checkpoints/best.pth", best_epoch=epoch,
                                 best_validation_loss=validation["loss"])
+                if replaying:
+                    manifest["best_checkpoint_sha256"] = _sha256(run_dir / "checkpoints/best.pth")
             write_json(manifest_path, manifest)
             print(f"Epoch {epoch}/{epochs}: train loss={training['loss']:.6f}, "
                   f"validation loss={validation['loss']:.6f}, labeled pixels="
@@ -321,10 +396,12 @@ def make_parser():
     parser.add_argument("--prepared-dir", type=Path, required=True, help="contains labels/ and manifest.json")
     parser.add_argument("--base-model", type=Path, default=default_model_path())
     parser.add_argument("--base-sha256", help="optional expected SHA256 of the original Base; checked before load")
-    parser.add_argument("--output-dir", type=Path, default=Path("runs/gsi_phase_a"))
+    parser.add_argument("--output-dir", type=Path,
+                        help="default: v0.1/v0.2=runs/gsi_phase_a; v0.3=training_outputs/gsi_phase_a_v03")
     parser.add_argument("--train-ratio", type=float, default=0.8)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--training-mode", choices=("positive_only", "base_preservation"), default="positive_only")
+    parser.add_argument("--training-mode", choices=("positive_only", "base_preservation", "base_preservation_replay"), default="positive_only")
+    parser.add_argument("--alpha-replay", type=float, default=1.0)
     parser.add_argument("--lambda-preserve", type=float, default=1.0)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--epochs", type=int, default=None,
