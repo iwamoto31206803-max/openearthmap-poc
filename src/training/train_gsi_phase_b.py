@@ -112,13 +112,10 @@ def positive_preservation_losses(student_logits, teacher_logits, labels, image_m
 
 
 def water_schedule(slot_count: int, water_count: int, seed: int = DEFAULT_SEED):
-    """Assign each shuffled Water item once to deterministically dispersed slots."""
+    """Select deterministic slots that each consume the next Water sample once."""
     if not 0 <= water_count <= slot_count:
         raise ValueError("Water count must be between zero and Paddy slot count")
-    rng = random.Random(seed)
-    slots = rng.sample(range(slot_count), water_count)
-    rng.shuffle(slots)  # decouple Water item order from sorted slot order
-    return dict(zip(slots, range(water_count)))
+    return set(random.Random(seed).sample(range(slot_count), water_count))
 
 
 def _source_forward(model, teacher, batch, device, target, weight, temperature):
@@ -139,7 +136,7 @@ def run_phase_b_epoch(model, paddy_loader, device, optimizer=None, *, teacher, r
     replay.validate_replay(lambda_preserve, temperature, alpha)
     training = optimizer is not None
     model.train(training); model.encoder.eval(); teacher.requires_grad_(False); teacher.eval()
-    schedule = schedule or {}
+    schedule = schedule or set()
     sources = {name: {"ce": 0., "kl": 0., "p": 0, "u": 0, "agree": 0,
                              "prob": 0., "base_agree": 0}
                for name in ("paddy", "water")}
@@ -302,7 +299,7 @@ def train(args):
         "water_all_ignore_usage":"not used for training, replay, or validation",
         "total_optimizer_updates":epochs*len(pt), "epoch_axis":"Paddy positive train split",
         "split_method":"sort IDs, random.Random(seed).shuffle, floor(n*ratio), clamp to [1,n-1]",
-        "water_schedule":{"deterministic":True,"seed":42,"method":"random.sample slots; each shuffled Water train item once",
+        "water_schedule":{"deterministic":True,"seed":42,"method":"random.sample slot set; consume next Water train sample at each selected slot",
                           "slot_count":len(pt),"water_slot_count":len(wt)},
         "loss":"L_paddy + optional L_water + alpha_replay * L_replay; one backward and optimizer step",
         "prepared_manifest_sha256":{"paddy":_sha256(pp),"water":_sha256(wp)},
@@ -324,11 +321,11 @@ def train(args):
     try:
         if args.preflight:
             manifest["preflight_metrics"] = run_phase_b_epoch(model, islice(pl,1), device, teacher=teacher,
-                replay_loader=list(islice(rl,1)), water_loader=list(islice(wl,1)), schedule={0:0},
+                replay_loader=list(islice(rl,1)), water_loader=list(islice(wl,1)), schedule={0},
                 lambda_preserve=args.lambda_preserve, temperature=args.temperature, alpha=args.alpha_replay)
             manifest["status"]="preflight_passed"; return run_dir
         for epoch in range(1, epochs+1):
-            train_schedule = {0:0} if args.smoke_test else schedule
+            train_schedule = {0} if args.smoke_test else schedule
             training = run_phase_b_epoch(model, islice(pl,1) if args.smoke_test else pl, device, optimizer,
                 teacher=teacher,replay_loader=list(islice(rl,1)) if args.smoke_test else rl,
                 water_loader=list(islice(wl,1)) if args.smoke_test else wl,schedule=train_schedule,

@@ -22,7 +22,9 @@ preflight、training、SACLAJ evaluationは未実行である。結果や精度�
 
 1 epochはPaddy positive trainの1,028 logical stepsである。Water trainの各sampleは、seed 42で
 `random.sample`した553 slotsへ決定的に分散し、split順に各1回だけ消費する。cycle/repeatせず、
-残る475 stepsはWaterなしである。Paddy replayはv0.3と同様、短いloaderを決定的に再開する。
+残る475 stepsはWaterなしである。scheduleはWaterを挿入するslot集合だけを保持し、各selected slotで
+Water loaderから次のsampleを消費する。Paddy replayはv0.3と同じscheduling semanticsを維持し、
+loaderがepoch axisより短い場合のみ決定的に再開する。現行Pilotでは1051 > 1028のため再開しない。
 この設計によりWater追加後もoptimizer updatesとPaddy/replay exposureを変えない。
 
 各stepのlossは次の単純加算で、`backward()`と`optimizer.step()`は各1回だけである。Paddyと

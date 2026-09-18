@@ -34,10 +34,11 @@ def test_water_mask_ce_and_unknown_preservation_are_disjoint():
 
 def test_deterministic_dispersed_water_schedule():
     first=phase_b.water_schedule(10,5,42)
+    assert isinstance(first, set)
     assert first == phase_b.water_schedule(10,5,42)
     assert first != phase_b.water_schedule(10,5,43)
-    assert len(first)==5 and set(first.values())==set(range(5))
-    assert set(first) != set(range(5))
+    assert len(first)==5
+    assert first != set(range(5))
     with pytest.raises(ValueError): phase_b.water_schedule(2,3)
 
 
@@ -49,7 +50,7 @@ def test_logical_step_composition_and_single_update(with_water):
     optimizer.register_step_post_hook(lambda *args: steps.append(1))
     paddy,replay_batch=batches(); water=[water_batch()] if with_water else []
     result=phase_b.run_phase_b_epoch(student,[paddy]*3,"cpu",optimizer,teacher=teacher,
-        replay_loader=[replay_batch],water_loader=water,schedule={1:0} if with_water else {})
+        replay_loader=[replay_batch],water_loader=water,schedule={1} if with_water else set())
     assert len(steps)==result["optimizer_update_count"]==result["logical_step_count"]==3
     assert result["water_step_count"] == int(with_water)
     assert (result["water"] is not None) is with_water
