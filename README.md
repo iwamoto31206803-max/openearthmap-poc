@@ -41,7 +41,8 @@ openearthmap-poc/
 │  └─ predict_rgb_tiled.py
 │
 ├─ docs/
-│  └─ POC_STATUS_20260912.md
+│  ├─ CURRENT_STATUS.md       # 現在の状況と次の優先事項
+│  └─ POC_STATUS_20260912.md  # 過去時点のスナップショット
 └─ examples/
    └─ README.md
 ```
@@ -95,7 +96,9 @@ Raw推論と後処理を分離することで、モデル性能とGIS後処理�
 - 5 m² sieveでポリゴン数を約56%削減しつつ、変更画素は概ね0.6%未満
 - GeoPackageをQGISで編集可能
 
-詳細は `docs/POC_STATUS_20260912.md` を参照してください。
+現在の状況と次の優先事項は [Current Status](docs/CURRENT_STATUS.md) を参照してください。
+次はmanual GTではなくGSI-only expansionを優先します。
+`docs/POC_STATUS_20260912.md` は2026-09-12時点のhistorical snapshotとして保持しています。
 
 GSI部分教師データの準備と監査については
 `docs/GSI_TRAINING_DATA.md` を参照してください。
