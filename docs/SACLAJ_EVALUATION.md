@@ -1,8 +1,9 @@
 # SACLAJ Evaluation v0.1
 
 Phase A Minimal End-to-Endの評価部分です。Base model → GSI paddy class-7 positive-only
-partial-label fine-tuning済みcheckpoint → SACLAJ independent point reference →
-Base / Fine-tuned paired comparisonを行います。再学習やproduction accuracyの証明はしません。
+partial-label fine-tuning済みcheckpoint → SACLAJ point reference → Base / Fine-tuned paired comparisonを
+行います。SACLAJは学習には使っていませんが、v0.1 / v0.2の結果が後続設計に影響したため、
+現在の位置づけはdevelopment evaluationです。再学習やproduction accuracyの証明はしません。
 
 ## Category_ID mappingとprovenance
 

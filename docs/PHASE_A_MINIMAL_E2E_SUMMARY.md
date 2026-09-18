@@ -3,121 +3,117 @@
 ## 1. 位置づけと目的
 
 本記録は、manual ground truth（manual GT）を作成しないPhase Aにおいて、
-`teacher preparation → fine-tuning → independent SACLAJ evaluation` という最小の
-End-to-End経路が成立するかを確認した実験のまとめである。production modelの成果報告、
-production accuracyの証明、またはモデル採用判断ではない。
+`teacher preparation → fine-tuning → SACLAJ development evaluation`の最小
+End-to-End経路と、適応とBase出力保持のtrade-offを確認した実験のまとめである。
+production modelの成果報告、production accuracyの証明、または最終的なモデル採用判断ではない。
 
-目的は、GSI由来の水田partial labelをOEM8 Agricultureへ適応させ、その変更が既存の
-OEM8出力へ及ぼす影響を、学習には使用していないSACLAJ地点referenceで比較可能な形に
-することだった。OEM8の既存class IDは変更しておらず、対象はclass 7
-（Cropland / Agriculture）である。
+GSI由来の水田partial labelはOEM8 class 7（Cropland / Agriculture）だけをpositiveとし、
+その他をclass 255（unknown / ignore）とした。OEM8の既存class IDは変更していない。
 
-## 2. DatasetとBase model
+## 2. Datasetと共通条件
 
-GSI paddy partial-label datasetは、GSI航空写真2,600画像に対し、水田に該当する画素だけを
-class 7のpositiveとして与え、その他をclass 255（unknown / ignore）としたデータである。
-positiveは156,376,781 / 850,576,012画素（約18.38%）、全画素unknownのFALSE画像は
-1,314枚だった。FALSE画像を除いた1,286枚を、seed 42でtrain 1,028枚 / validation
-258枚に決定的に分割した。unknownはBackgroundでもnegativeでもない。また、この
-image-level splitはspatial independenceを保証しない。
+GSI航空写真2,600画像のうちpositive-bearingは1,286枚、全画素unknownのFALSE画像は
+1,314枚である。positive-bearing画像はseed 42でtrain 1,028枚 / validation 258枚に
+決定的に分割した。unknownはBackgroundでもnegativeでもなく、このimage-level splitは
+spatial independenceを保証しない。
 
-Base modelには `RGB_Real_5_u-efficientnet-b4.pth` を使用した。architectureは
-9-classのSMP U-Net（EfficientNet-B4 encoder、scSE）で、入力はuint8 RGBをfloat32へ変換し
-255で除算する既存前処理を維持した。encoderのparameterとtrain時のBN/dropoutを固定し、
-decoderとsegmentation headのみを更新した。
+Baseは`RGB_Real_5_u-efficientnet-b4.pth`、architectureは9-class SMP U-Net
+（EfficientNet-B4 encoder、scSE）である。encoderとtrain時のBN/dropoutを固定し、decoderと
+segmentation headだけを更新した。
 
-## 3. v0.1 positive-only fine-tuning
+## 3. 学習方法の変遷
 
-v0.1はpositive画素だけに `CrossEntropyLoss(ignore_index=255)` を適用する設計である。
-unknown画素にはlossを与えず、FALSE画像も除外した。これはGSI partial labelへの
-adaptationを最小構成で確認するためのPilotであり、他classの保持を目的関数に含めていない。
+- **v0.1 positive-only:** positive画素だけにcross entropyを適用した。Agriculture適応は強いが、
+  Agriculture leakageとTree / Waterの崩壊を生じ、直接のpositive-only適応が危険と判断した。
+- **v0.2 Base-preservation:** original Baseから再開始し、positive CEにunknown画素上の
+  `KL(Base teacher || student)`を加えた。collapseを大幅に抑えたが、Water保持は34%に留まった。
+- **v0.3 preservation-only replay:** v0.2の目的関数に、all-ignore/FALSE画像に対する
+  Base-teacher preservation lossを追加した。FALSE画像をAgriculture negativeとして直接教師化せず、
+  Base分布の保持だけに使うことが目的である。
 
-同じSACLAJ標本で、Rice → AgricultureはBase 27%からv0.1 99%、Other crop →
-Agricultureは24%から92%となった。一方、非Agriculture地点でAgricultureを出すleakageは
-3.375%から39.25%へ変化し、Broadleaf / Needleleaf / Mixed → Treeはそれぞれ
-89% / 83% / 87%から13% / 7% / 17%、Water → Waterは81%から6%となった。
-この全体的な出力driftを、本実験では **Agriculture collapse** として扱った。
-positive-onlyの高いpositive agreementだけでは、既存OEM8能力の保持を判断できないことが
-明確になった。
+## 4. v0.3会社PC Pilot結果
 
-## 4. Base-preservation仮説とv0.2
+preflightはPASSし、画像数、split、Base SHA256、encoder固定、decoder / segmentation headの
+trainable状態、teacherの`eval` / `no_grad`とoptimizer対象外を確認した。preflightで学習は
+行っていない。smokeもPASSし、positive 1 batch + replay 1 batchでbackwardと
+`optimizer.step()`が完了した。smoke-onlyの数値はperformance evidenceとして扱わない。
 
-Agriculture collapseは、unknownをlossから完全に除外したことで、class 7以外のBase出力を
-維持する制約がなかったためではないか、というBase-preservation仮説を立てた。v0.2では
-v0.1 checkpointから継続せず、**original Baseから再スタート**し、次の目的関数を用いた。
+1 epoch Pilot（run ID `20260917T160534_801449Z_8c785b89`）は`completed`となった。
+positive train / validationは1,028 / 258、replay train / validationは1,051 / 263、
+`alpha_replay=1.0`である。詳細なloss、hashと実行provenanceは
+[Replay-Preservation v0.3](REPLAY_PRESERVATION_V03.md)に記録する。
 
-- **positive:** GSI class-7 labelに対するcross entropy（GSI CE）
-- **unknown:** `KL(Base teacher || student)`（9-class分布、teacherは固定）
-- **合成:** `L_total = L_GSI + lambda × L_preserve`
-- **Pilot条件:** `lambda=1.0`、`T=1.0`
+## 5. SACLAJ development evaluation
 
-positiveとunknownは別々の画素数で平均し、synthetic paddingは両方から除外した。teacherと
-studentは同じoriginal Baseをstrict loadし、teacherはeval / no-gradで固定した。
+同一の固定development sample（10 subtype × 100 = 1,000点、seed 42）のaggregateを比較した。
+値は期待OEM8 classとのpoint agreementである。Agriculture leakageは非Agriculture 800点で
+Agricultureを予測した割合で、低い方向が望ましい。`~14%`はv0.1の既存記録の近似値である。
 
-会社PCでは、同じdataset、split、original Baseを用いたv0.2の **preflight、1-step
-smoke、1 epoch Pilot** が順に完走した。preflightとsmokeはPilotとは別runで、いずれも
-original Baseから開始し、resumeには使用していない。SACLAJ evaluationには1 epoch Pilotの
-`checkpoints/best.pth`を用いた。
+| Metric | Base | v0.1 | v0.2 | v0.3 |
+|---|---:|---:|---:|---:|
+| Rice → Agriculture | 27% | 99% | 84% | 87% |
+| Other crop → Agriculture | 24% | 92% | 56% | 61% |
+| Agriculture leakage | 3.375% | 39.25% | 6.5% | 2.625% |
+| Broadleaf → Tree | 89% | 13% | 90% | 91% |
+| Needleleaf → Tree | 83% | 7% | 89% | 87% |
+| Mixed → Tree | 87% | 17% | 91% | 88% |
+| Water → Water | 81% | 6% | 34% | 72% |
+| Needleleaf evergreen → Tree | 88% | ~14% | 96% | 95% |
+| Broadleaf evergreen → Tree | 88% | 15% | 88% | 90% |
+| Needleleaf deciduous → Tree | 85% | 6% | 96% | 89% |
+| Broadleaf deciduous → Tree | 79% | 6% | 85% | 81% |
 
-## 5. SACLAJ 1,000点での比較
+v0.2からv0.3で、Water保持は34% → 72%、Riceは84% → 87%、Other cropは
+56% → 61%、Agriculture leakageは6.5% → 2.625%となった。これは固定SACLAJ
+development sample上で、v0.3がより好ましいadaptation-preservation trade-offを示した、
+またはclass agreement / retentionが改善したという観察であり、accuracy improvementや
+production readinessの主張ではない。
 
-評価は10 subtypeそれぞれ最大100点、合計1,000点の **stratified capped sample**
-（seed 42）を同一条件で用いたBase / v0.1 / v0.2比較である。矢印の右側は各subtypeで期待する
-OEM8 class、値はそのclassとのpoint agreementを示す。Agriculture leakageだけは、Tree / Water
-の非Agriculture 800点でAgricultureを予測した割合であり、低い方向が望ましい。
+v0.1 / v0.2の結果が後続設計に影響したため、SACLAJはもはやfinal holdoutではなく
+**development evaluation**である。上限付き層化標本は日本全体のclass頻度を示さず、
+pixel-perfect GTでもない。training領域やBase pretrainingとの地理的重複の意味での統計的独立性は
+主張せず、SACLAJ観測時期とGSI imageryのtemporal mismatchもあり得る。
 
-| SACLAJ指標 | Base | v0.1 positive-only | v0.2 Base-preservation |
-|---|---:|---:|---:|
-| Rice → Agriculture | 27% | 99% | 84% |
-| Other crop → Agriculture | 24% | 92% | 56% |
-| Agriculture leakage | 3.375% | 39.25% | 6.5% |
-| Broadleaf → Tree | 89% | 13% | 90% |
-| Needleleaf → Tree | 83% | 7% | 89% |
-| Mixed → Tree | 87% | 17% | 91% |
-| Water → Water | 81% | 6% | 34% |
-| Needleleaf evergreen → Tree | 88% | 14% | 96% |
-| Broadleaf evergreen → Tree | 88% | 15% | 88% |
-| Needleleaf deciduous → Tree | 85% | 6% | 96% |
-| Broadleaf deciduous → Tree | 79% | 6% | 85% |
+## 6. v0.2 → v0.3評価入力同一性
 
-## 6. 解釈
+会社PCローカルのread-only比較で、v0.2評価run
+`20260916T135520_362028Z_4a047f8d`とv0.3評価run
+`20260918T000738_565461Z_3d6b2f0b`の入力同一性を確認した。
 
-- GSI partial labelsによるclass 7へのadaptation自体は成立した。
-- positive-only supervisionは、既存OEM8能力を大きく破壊し得る。
-- Base-preservationにより、v0.1で見られたAgriculture leakageとTree系degradationは大幅に
-  改善した。
-- Tree系はSACLAJ agreement上、ほぼBase水準を維持した。
-- Waterはv0.1の6%から34%へ変化したが、Baseの81%には届かず、未解決である。
-- v0.2はPhase Aの基本学習方式候補であるが、production modelではない。
+- sampled site set / successful site set / subtype counts: **PASS**
+- common successful sites: 1,000
+- same / different / missing patch SHA256: 1,000 / 0 / 0
+- Base argmax mismatches: 0
+- Base expected-probability mismatches: 0
+- Base Agriculture-probability mismatches: 0
+- **V0.2 vs V0.3 EVALUATION INPUT IDENTITY: PASS**
 
-これらは「accuracy improved」という主張ではない。SACLAJはfine-tuningに用いていない
-independent point referenceだが、pixel-perfect GTではなく、training領域やBase pretrainingとの
-地理的重複を検証した意味での統計的独立性も主張しない。各subtype最大100点の上限付き層化標本は
-日本全体のclass頻度を表さない。SACLAJ観測時期とGSI latest imageryの撮影時期にはtemporal
-mismatchがあり得て、実際の土地被覆変化も不一致に含まれ得る。また、softmax probabilityは
-calibrated accuracyではない。
+v0.2とv0.3のSACLAJ development evaluationは同じsampled sitesとbyte-identicalな保存済み
+GSI patchesを使った。したがって、v0.2–v0.3の指標差は同じ評価入力上の
+model-output differencesとして扱える。この記録には地点ID、座標、地点別予測、patch名は含めない。
 
-## 7. Run provenanceとlocal execution reference
+## 7. Phase A結論
 
-実runのmanifest、checkpointおよび評価結果は会社PCローカルにあり、本リポジトリには含めて
-いない。SACLAJのCSV、座標、地点ID、地点別結果も外部へ持ち出さない。このため、本記録作成時に
-リポジトリ内で確認できた範囲では、実値のrun IDを転記・検証できない。未確認のIDを推測して
-記載しない。
+Phase Aにより、direct positive-only adaptationは無関係なclassをcollapseさせ得るため
+危険であることが分かった。Base-distribution preservationはこの失敗を大幅に抑え、
+all-ignore/FALSE画像のpreservation-only replayを追加すると、固定SACLAJ development
+sample上でadaptation-preservation trade-offがさらに改善した。したがってv0.3は現時点で
+最も有力なPhase A学習方式candidateであるが、production modelではない。最終選定には、
+manual GTまたは同等の独立評価データを用いたspatially/unseen evaluationが必要である。
 
-| 対象 | manifestで確認するfield / 主要checkpoint | 記録状況 |
-|---|---|---|
-| v0.1 1 epoch Pilot | `run_manifest.json` の `run_id`; `checkpoints/best.pth`, `checkpoints/final.pth` | company PC local execution reference（IDはrepository外） |
-| v0.2 preflight | `run_manifest.json` の `run_id`, `status=preflight_passed` | company PC local execution reference（IDはrepository外） |
-| v0.2 1-step smoke | `run_manifest.json` の `run_id`, `status=smoke_test_completed`; smoke用checkpoint | company PC local execution reference（IDはrepository外） |
-| v0.2 1 epoch Pilot | `run_manifest.json` の `run_id`; `checkpoints/best.pth`, `checkpoints/final.pth` | company PC local execution reference（IDはrepository外） |
-| SACLAJ Base / v0.1 evaluation | `evaluation_manifest.json` の `run_id` | company PC local execution reference（IDはrepository外） |
-| SACLAJ Base / v0.2 evaluation | `evaluation_manifest.json` の `run_id` | company PC local execution reference（IDはrepository外） |
+## 8. Provenanceと情報管理
 
-ローカル絶対pathは環境固有の **local execution reference** とし、再現性の識別には各manifestの
-run ID、checkpoint SHA256、Base SHA256、prepared manifest SHA256、SACLAJ CSV / mapping SHA256を
-使用する。将来この表を更新する場合も、SACLAJの機微情報やモデル重み・実行結果そのものはGitへ
-追加せず、公開可能性を確認した識別情報だけを記録する。
+v0.3 PilotのBase SHA256は
+`852cd4f27627a8b0b34fe35618fabafc85e1ff5025eadc259176ca4ecc23a81c`、実行コードの
+git SHAは`23b1862cdda6ba30dedde9534e349f8c8c564d79`、best checkpoint SHA256は
+`e536052223f2989ef382fd7d1bbfaa0d75662c0757c8362b574b7c28df4d0172`である。historical
+v0.1 / v0.2 git SHAは未確認値を推測せず、記載しない。
+
+実runのmanifest、checkpoint、training output、SACLAJ CSV、座標、地点ID、地点別結果、
+patchは会社PCローカルにのみ保持し、Gitに含めない。本記録には公開可能な実行識別子、
+hash、件数とaggregate指標のみを記録する。
 
 実装と個別手順は、[Phase A v0.1](GSI_PHASE_A_TRAINING.md)、
 [Base-Preservation v0.2](BASE_PRESERVATION_FINETUNING.md)、
-[SACLAJ Evaluation v0.1](SACLAJ_EVALUATION.md)を参照すること。
+[Replay-Preservation v0.3](REPLAY_PRESERVATION_V03.md)、
+[SACLAJ Evaluation](SACLAJ_EVALUATION.md)を参照すること。
