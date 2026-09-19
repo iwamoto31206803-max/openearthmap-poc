@@ -74,6 +74,25 @@ Agriculture leakage 2.625 / 1.377 / 2.5%、Water 72 / 89 / 87%である。v0.2�
 v0.2を最適とは断定せず、v0.1も棄却しない。詳細は
 [Phase B Water milestone](PHASE_B_WATER_MILESTONE_20260919.md)を参照すること。
 
+次段階の **Phase B v0.3 Road Pilot** 実装を追加したが、実データPilotはまだ実行していない。
+これはv0.2（Original Base start、Paddy + Paddy replay、`beta_water=0.5`、1,028 logical
+steps/updates）へRoad class 4 teacherを追加する比較実験であり、`beta_road=1.0`を初期値とする。
+
+- Road audit: 2,000 images、positive-bearing 1,639、all-ignore 361、positive pixels
+  65,289,637（9.9775%）、pairing valid、size mismatch 0。
+- Road positive上のOriginal BaseはRoad argmax 55.5998%、Pavement / Developed space 33.0333%。
+  主な競合診断は **Road vs Pavement / Developed space** である。
+- Paddy/Roadのbyte-identical source overlapは7、Water/Roadは0。最初のPilotではSHA256により
+  7 Road candidatesをsplit前に除外し、既存Paddy/replay splitは変更しない。
+- Road train poolからseed 42で重複なく1,028件を選び、各Paddy stepに1件を組み込む。
+  Road validationは全件を1回評価し、Road all-ignoreは使用しない。
+- source間のunknown/replay conflictを扱うmulti-teacher-aware maskingはfuture workであり、
+  このPilotには導入しない。
+
+このPilotはRoad追加によるRoad、Pavement、Agriculture / Water / Treeへの影響を測るためのもので、
+Road accuracy、全国generalization、production readiness、最適beta、Pavement境界の解決を主張しない。
+実行条件とcompany-PC commandは[GSI Phase B training](GSI_PHASE_B_TRAINING.md)を参照すること。
+
 ## Evaluation status
 
 SACLAJ 1,000 pointsはdevelopment evaluationであり、final holdoutではない。
@@ -106,3 +125,4 @@ Manual GTは直近のフェーズではない。次のいずれかに該当す�
 - Base modelのlicensingおよびenterprise-use条件は未解決である。
 - ローカルのrestricted dataはGitHubへ追加しない。
 - 次はRoad / Building / Tree等のteacherを追加し、multi-teacher条件でWater weightを再評価する。
+- Road v0.3の実データPilotと評価は未実行であり、Road/Pavement trade-offと他classへの副作用は未確認である。
