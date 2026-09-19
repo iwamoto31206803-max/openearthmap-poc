@@ -305,7 +305,12 @@ def train(args):
              "water_positive_validation_ids": wv}
     for name, samples in files.items(): write_json(run_dir/(name+".json"), [s.source_image_id for s in samples])
     schedule = water_schedule(len(pt), len(wt), 42)
-    experiment = "gsi_phase_b_v0.1" if args.beta_water == 1.0 else "gsi_phase_b_v0.2"
+    if args.beta_water == 1.0:
+        experiment = "gsi_phase_b_v0.1"
+    elif args.beta_water == 0.5:
+        experiment = "gsi_phase_b_v0.2"
+    else:
+        experiment = "gsi_phase_b_custom_water_weight"
     manifest = {"schema_version": 4, "experiment": experiment, "model_version": experiment,
         "training_mode": "phase_b_v0.1_compatible" if args.beta_water == 1.0 else "phase_b_v0.2",
         "status": "running", "run_id": run_id, "timestamp_utc": timestamp.isoformat(),
