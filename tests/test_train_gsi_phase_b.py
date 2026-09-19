@@ -1,6 +1,7 @@
 """Synthetic-only tests for Phase B v0.1; no real GSI data or Base weights."""
 
 import copy
+from dataclasses import replace
 import json
 
 import numpy as np
@@ -16,6 +17,11 @@ from test_train_gsi_paddy import TinyModel, make_data, single_thread  # noqa: F4
 
 def water_batch():
     images=torch.rand(1,3,3,5); labels=torch.full((1,3,5),255); labels[:,0,0]=6
+    return images, labels, torch.ones_like(labels,dtype=torch.bool)
+
+
+def road_batch():
+    images=torch.rand(1,3,3,5); labels=torch.full((1,3,5),255); labels[:,0,0]=4
     return images, labels, torch.ones_like(labels,dtype=torch.bool)
 
 
@@ -54,6 +60,47 @@ def test_beta_water_cli_default_preserves_v01():
                 "--water-prepared-dir", "w"]
     assert parser.parse_args(required).beta_water == 1.0
     assert parser.parse_args(required + ["--beta-water", "0.5"]).beta_water == 0.5
+    assert parser.parse_args(required).beta_road == 1.0
+
+
+@pytest.mark.parametrize("value", [-0.1, float("nan"), float("inf"), -float("inf")])
+def test_invalid_beta_road_rejected(value):
+    with pytest.raises(ValueError, match="beta_road"):
+        phase_b.validate_beta_road(value)
+
+
+@pytest.mark.parametrize("beta", [1.0, 0.5, 0.0])
+def test_beta_road_scales_only_road_objective_and_metrics_stay_raw(beta):
+    student=TinyModel(); teacher=copy.deepcopy(student).requires_grad_(False).eval()
+    paddy,replay_batch=batches(); road=road_batch()
+    common=dict(teacher=teacher,replay_loader=[replay_batch],water_loader=[],schedule=set(),
+                road_loader=[road])
+    full=phase_b.run_phase_b_epoch(student,[paddy],"cpu",beta_road=1.0,**common)
+    weighted=phase_b.run_phase_b_epoch(student,[paddy],"cpu",beta_road=beta,**common)
+    objective=full["road"]["positive_ce"]+full["road"]["unknown_preservation_kl"]
+    assert weighted["loss"] == pytest.approx(full["loss"]-(1-beta)*objective)
+    assert weighted["paddy"] == full["paddy"]
+    assert weighted["water"] == full["water"] is None
+    assert weighted["replay"] == full["replay"] and weighted["road"] == full["road"]
+    if beta == 0:
+        images,labels,mask=road
+        road_loss,_,_=phase_b.positive_preservation_losses(
+            student(images),teacher(images),labels,mask,phase_b.ROAD_CLASS)
+        gradients=torch.autograd.grad(beta*road_loss,tuple(student.parameters()),allow_unused=True)
+        assert all(value is None or torch.count_nonzero(value)==0 for value in gradients)
+
+
+def test_no_water_step_keeps_road_paddy_and_replay_in_one_update():
+    student=TinyModel(); teacher=copy.deepcopy(student).requires_grad_(False).eval()
+    from src.training.train_gsi_paddy import freeze_encoder, make_optimizer
+    freeze_encoder(student); optimizer=make_optimizer(student,1e-4); updates=[]
+    optimizer.register_step_post_hook(lambda *args: updates.append(1))
+    paddy,replay_batch=batches()
+    result=phase_b.run_phase_b_epoch(student,[paddy],"cpu",optimizer,teacher=teacher,
+        replay_loader=[replay_batch],water_loader=[],schedule=set(),road_loader=[road_batch()])
+    assert len(updates)==result["logical_step_count"]==result["optimizer_update_count"]==1
+    assert result["water_step_count"]==0 and result["road_step_count"]==1
+    assert result["water"] is None and result["road"] is not None
 
 
 def test_beta_scales_only_complete_water_objective():
@@ -87,6 +134,26 @@ def test_phase_b_inventory_regression():
     assert len(schedule) == 553 and min(schedule) >= 0 and max(schedule) < 1028
 
 
+def test_road_pilot_sampling_is_deterministic_unique_and_exact():
+    pool=list(range(1305))
+    selected=phase_b.road_pilot_samples(pool,1028,42)
+    assert selected == phase_b.road_pilot_samples(pool,1028,42)
+    assert len(selected)==len(set(selected))==1028 and len(pool)-len(selected)==277
+    with pytest.raises(ValueError): phase_b.road_pilot_samples(pool,1306,42)
+
+
+def test_road_1028_steps_create_exactly_1028_optimizer_updates():
+    student=TinyModel(); teacher=copy.deepcopy(student).requires_grad_(False).eval()
+    from src.training.train_gsi_paddy import freeze_encoder, make_optimizer
+    freeze_encoder(student); optimizer=make_optimizer(student,1e-4); updates=[]
+    optimizer.register_step_post_hook(lambda *args: updates.append(1))
+    paddy,replay_batch=batches(); road=road_batch()
+    result=phase_b.run_phase_b_epoch(student,[paddy]*1028,"cpu",optimizer,teacher=teacher,
+        replay_loader=[replay_batch],water_loader=[],schedule=set(),road_loader=[road]*1028)
+    assert len(updates)==result["logical_step_count"]==result["optimizer_update_count"]==1028
+    assert result["road_step_count"]==1028
+
+
 @pytest.mark.parametrize("with_water", [False, True])
 def test_logical_step_composition_and_single_update(with_water):
     student=TinyModel(); teacher=copy.deepcopy(student).requires_grad_(False).eval()
@@ -116,6 +183,36 @@ def make_water_data(tmp_path):
               "false_image_count":2,"positive_pixel_count":3,"total_pixel_count":75}
     (prepared/"manifest.json").write_text(json.dumps(manifest))
     return org,prepared
+
+
+def make_road_data(tmp_path):
+    org=tmp_path/"road_org"; labels=tmp_path/"road_prepared"/"labels"
+    (org/"a").mkdir(parents=True); (labels/"a").mkdir(parents=True)
+    for name, positive in (("one",True),("ignore",False)):
+        Image.new("RGB",(3,2),(9,8,7)).save(org/"a"/f"{name}.png")
+        value=np.full((2,3),255,dtype=np.uint8)
+        if positive: value[0,0]=4
+        Image.fromarray(value).save(labels/"a"/f"{name}.png")
+    return org, labels
+
+
+def test_road_scanner_separates_all_ignore_and_rejects_invalid(tmp_path):
+    org,labels=make_road_data(tmp_path)
+    positive,ignored=phase_b.scan_road_dataset(org,labels)
+    assert len(positive)==len(ignored)==1 and positive[0].positive_pixel_count==1
+    invalid=np.full((2,3),255,dtype=np.uint8); invalid[0,0]=6
+    Image.fromarray(invalid).save(labels/"a"/"one.png")
+    with pytest.raises(ValueError,match="only 4 and 255"):
+        phase_b.scan_road_dataset(org,labels)
+
+
+def test_road_overlap_uses_content_hash_not_filename(tmp_path):
+    org,labels=make_road_data(tmp_path); road,_=phase_b.scan_road_dataset(org,labels)
+    shared=replace(road[0],source_image_id="totally/different/name")
+    unique=replace(road[0],source_image_id="same-looking-name",image_sha256="0"*64)
+    retained,excluded,references=phase_b.exclude_source_hash_overlap([shared,unique],road)
+    assert retained==[unique] and excluded==[shared] and references==["overlap-001"]
+    assert shared.image_sha256 not in references[0]
 
 
 @pytest.mark.parametrize(("beta", "experiment"), [(1.0, "gsi_phase_b_v0.1"),

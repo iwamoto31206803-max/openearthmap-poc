@@ -1,4 +1,4 @@
-# GSI Phase B v0.1 / v0.2: weighted Water-positive supervision
+# GSI Phase B v0.1–v0.3: weighted Water and Road-positive supervision
 
 ## 目的と状態
 
@@ -8,6 +8,44 @@ Phase A v0.3 preservation-only replayを維持したまま、GSI Water positive�
 確認するため、**Water source objective全体のweightだけを0.5へ下げた**。v0.1 / v0.2の
 実データPilotとSACLAJ development evaluationは完了している。SACLAJはdevelopment evaluationであり、
 manual GTまたはproduction accuracyの根拠ではない。
+
+Phase B v0.3はv0.2をそのまま対照条件とし、**Road positive teacherだけ**を追加する未実行の
+Pilotである。`beta_water=0.5`を維持し、`beta_road=1.0`とする。この値が最適とは仮定しない。
+
+## v0.3 Road Pilot仕様
+
+Road auditは2,000 images、positive-bearing 1,639、all-ignore 361、positive pixels
+65,289,637（9.977510666780771%）、pairing valid、size mismatch 0である。exact-red以外の
+261 mismatch pixelsはteacher maskに含まれない。Road labelはOEM8 class 4またはignore 255だけを
+受理し、all-ignore 361件はtraining、replay、validationのいずれにも使用しない。
+
+Road positive pixels上のOriginal Base argmaxはRoad 55.5998%、Pavement / Developed space
+33.0333%であり、mean probabilityはそれぞれ0.525316、0.334826である。従って主なBase conflictは
+**Road vs Pavement / Developed space**である。これは診断値であり、Road精度や境界問題の解決を
+示すものではない。
+
+PaddyとRoadにはsource image SHA256でbyte-identicalな7 images（Paddy positive train 6、Paddy
+replay train 1）がある。Water/Road overlapは0である。v0.3ではfilenameやnumeric IDではなく画像
+content SHA256で、この7件をRoad positive candidate poolから**split前に除外**する。Paddy splitと
+replay splitは変えない。manifestには件数と、raw hashを露出しない決定的なsanitized referenceを
+記録する。source間positive/unknown競合を一般化して解決するmulti-teacher-aware maskingは今回
+導入せず、future workとする。
+
+除外後のRoad candidateをseed 42、既存80/20規則でsplitし、Road train poolからseed 42で重複なく
+ちょうど1,028 samplesを選ぶ。各Paddy logical stepでRoadを1件ずつ消費するため、Roadは追加の
+optimizer updateを作らない。未使用train数をmanifestへ記録し、validationはRoad validation全件を
+各1回評価する。
+
+```text
+L_road = Road positive CE(class 4) + lambda * T^2 * Road unknown KL(Base || Student)
+Waterあり: L_paddy + beta_water * L_water + beta_road * L_road + alpha * L_replay
+Waterなし: L_paddy + beta_road * L_road + alpha * L_replay
+```
+
+Road source metricsはraw positive CE、class-4 agreement/mean probability、unknown preservation
+KL、unknown student/Base argmax agreement、positive/unknown pixel countsである。`beta_road`は
+validation totalを含むtotal objectiveだけへ掛け、raw metricsには掛けない。progress logにも
+Road consumed/totalとrunning raw Road CEを加える。
 
 ## 固定仕様
 
@@ -78,6 +116,34 @@ python -m src.training.train_gsi_phase_b ^
 
 `--water-*`が必須の独立entrypointなので、Phase Aの既存CLIでWaterが暗黙に有効になることはない。
 Phase Bはbatch size 1、seed 42、ratio 0.8を検査する。
+
+Road v0.3 Pilotでは次の3段階で明示的にRoad sourceを有効にする（実データPilotはまだ未実行）。
+
+```cmd
+python -m src.training.train_gsi_phase_b ^
+  --org-dir <PADDY_ORG> --prepared-dir <PADDY_PREPARED> ^
+  --water-org-dir <WATER_ORG> --water-prepared-dir <WATER_PREPARED> ^
+  --road-org-dir <ROAD_ORG> --road-prepared-dir <ROAD_PREPARED> ^
+  --base-model <ORIGINAL_BASE_PTH> --base-sha256 <EXPECTED_SHA256> ^
+  --beta-water 0.5 --beta-road 1.0 --preflight
+
+python -m src.training.train_gsi_phase_b ^
+  --org-dir <PADDY_ORG> --prepared-dir <PADDY_PREPARED> ^
+  --water-org-dir <WATER_ORG> --water-prepared-dir <WATER_PREPARED> ^
+  --road-org-dir <ROAD_ORG> --road-prepared-dir <ROAD_PREPARED> ^
+  --base-model <ORIGINAL_BASE_PTH> --base-sha256 <EXPECTED_SHA256> ^
+  --beta-water 0.5 --beta-road 1.0 --smoke-test
+
+python -m src.training.train_gsi_phase_b ^
+  --org-dir <PADDY_ORG> --prepared-dir <PADDY_PREPARED> ^
+  --water-org-dir <WATER_ORG> --water-prepared-dir <WATER_PREPARED> ^
+  --road-org-dir <ROAD_ORG> --road-prepared-dir <ROAD_PREPARED> ^
+  --base-model <ORIGINAL_BASE_PTH> --base-sha256 <EXPECTED_SHA256> ^
+  --beta-water 0.5 --beta-road 1.0 --epochs 1 --device cuda
+```
+
+Road引数を省略すればv0.1/v0.2経路を維持する。Road引数は必ずorg/preparedの組で指定し、
+`beta_road`はfiniteかつ0以上でなければならない。
 
 ## Validationとmanifest
 
