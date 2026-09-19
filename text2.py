@@ -1,20 +1,21 @@
 from pathlib import Path
+import json
 import hashlib
 
-import numpy as np
-from PIL import Image
+ROOT = Path(r"C:\OpenEarthMap_PoC")
 
+GSI = ROOT / "data" / "gsi"
 
-ROOT = Path(r"C:\OpenEarthMap_PoC\data\gsi")
+PADDY_ORG = GSI / "raw" / "paddy_572" / "org"
+ROAD_ORG = GSI / "raw" / "road_572" / "org"
 
-PADDY_ORG = ROOT / "raw" / "paddy_572" / "org"
-PADDY_LABEL = ROOT / "prepared" / "paddy_572" / "labels"
-
-WATER_ORG = ROOT / "working" / "water_572_fixed" / "org"
-WATER_LABEL = ROOT / "prepared" / "water_572" / "labels"
-
-ROAD_ORG = ROOT / "raw" / "road_572" / "org"
-ROAD_LABEL = ROOT / "prepared" / "road_572" / "labels"
+V02_RUN = (
+    ROOT
+    / "openearthmap-poc"
+    / "training_outputs"
+    / "gsi_phase_b_v01"
+    / "20260919T053943_488504Z_000833f3"
+)
 
 
 def sha256(path):
@@ -25,105 +26,95 @@ def sha256(path):
     return h.hexdigest()
 
 
-def index_by_hash(org_dir, label_dir):
+def load_ids(filename):
+    data = json.loads((V02_RUN / filename).read_text(encoding="utf-8"))
+
+    # 保存形式がlistそのものでもdictでも対応
+    if isinstance(data, list):
+        return set(data)
+
+    for key in ("ids", "sample_ids", "image_ids"):
+        if key in data:
+            return set(data[key])
+
+    raise RuntimeError(
+        f"Unknown ID-file structure: {filename}"
+    )
+
+
+paddy_positive_train = load_ids("paddy_train_ids.json")
+paddy_positive_val = load_ids("paddy_validation_ids.json")
+paddy_replay_train = load_ids("paddy_replay_train_ids.json")
+paddy_replay_val = load_ids("paddy_replay_validation_ids.json")
+
+
+def index(directory):
     result = {}
 
-    labels = {
-        p.relative_to(label_dir): p
-        for p in label_dir.rglob("*.png")
-    }
+    for p in directory.rglob("*.png"):
+        rel = p.relative_to(directory).with_suffix("").as_posix()
 
-    for image in org_dir.rglob("*.png"):
-        rel = image.relative_to(org_dir)
-
-        if rel not in labels:
-            raise RuntimeError(f"Missing label: {rel}")
-
-        digest = sha256(image)
-
-        result[digest] = {
-            "image": image,
-            "label": labels[rel],
-            "id": rel.as_posix(),
+        result[sha256(p)] = {
+            "id": rel,
+            "path": p,
         }
 
     return result
 
 
-paddy = index_by_hash(PADDY_ORG, PADDY_LABEL)
-water = index_by_hash(WATER_ORG, WATER_LABEL)
-road = index_by_hash(ROAD_ORG, ROAD_LABEL)
+paddy = index(PADDY_ORG)
+road = index(ROAD_ORG)
+
+shared = sorted(set(paddy) & set(road))
+
+print("=" * 72)
+print("PADDY / ROAD BYTE-IDENTICAL IMAGE SPLIT AUDIT")
+print("=" * 72)
+print("shared images =", len(shared))
+print()
+
+summary = {
+    "paddy_positive_train": 0,
+    "paddy_positive_val": 0,
+    "paddy_replay_train": 0,
+    "paddy_replay_val": 0,
+    "not_found": 0,
+}
+
+for digest in shared:
+
+    p = paddy[digest]
+    r = road[digest]
+
+    pid = p["id"]
+
+    if pid in paddy_positive_train:
+        split = "paddy_positive_train"
+
+    elif pid in paddy_positive_val:
+        split = "paddy_positive_val"
+
+    elif pid in paddy_replay_train:
+        split = "paddy_replay_train"
+
+    elif pid in paddy_replay_val:
+        split = "paddy_replay_val"
+
+    else:
+        split = "not_found"
+
+    summary[split] += 1
+
+    print(
+        f"Paddy {p['id']} <-> Road {r['id']} : {split}"
+    )
 
 
-def inspect_overlap(name, left, left_class, right, right_class):
+print()
+print("SUMMARY")
 
-    shared = sorted(set(left) & set(right))
+for key, value in summary.items():
+    print(key, "=", value)
 
-    print()
-    print("=" * 72)
-    print(name)
-    print("=" * 72)
-    print("shared images =", len(shared))
-
-    both_positive_images = 0
-    total_left_positive = 0
-    total_right_positive = 0
-    total_pixel_overlap = 0
-
-    for digest in shared:
-
-        a = left[digest]
-        b = right[digest]
-
-        with Image.open(a["label"]) as im:
-            la = np.asarray(im, dtype=np.uint8)
-
-        with Image.open(b["label"]) as im:
-            lb = np.asarray(im, dtype=np.uint8)
-
-        if la.shape != lb.shape:
-            raise RuntimeError("Shared source image has different label dimensions")
-
-        pa = la == left_class
-        pb = lb == right_class
-
-        na = int(pa.sum())
-        nb = int(pb.sum())
-        overlap = int((pa & pb).sum())
-
-        total_left_positive += na
-        total_right_positive += nb
-        total_pixel_overlap += overlap
-
-        if na > 0 and nb > 0:
-            both_positive_images += 1
-
-        print(
-            f"{a['id']} <-> {b['id']}: "
-            f"left_positive={na}, "
-            f"right_positive={nb}, "
-            f"pixel_overlap={overlap}"
-        )
-
-    print()
-    print("both-positive images =", both_positive_images)
-    print("left positive pixels =", total_left_positive)
-    print("right positive pixels =", total_right_positive)
-    print("positive-mask pixel overlap =", total_pixel_overlap)
-
-
-inspect_overlap(
-    "PADDY vs ROAD",
-    paddy,
-    7,
-    road,
-    4,
-)
-
-inspect_overlap(
-    "WATER vs ROAD",
-    water,
-    6,
-    road,
-    4,
-)
+print()
+print("=" * 72)
