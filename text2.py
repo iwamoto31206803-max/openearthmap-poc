@@ -1,212 +1,131 @@
 from pathlib import Path
-from collections import Counter
+import hashlib
+import random
 
-import numpy as np
+
+SEED = 42
+TRAIN_RATIO = 0.8
+
+ROOT = Path(r"C:\OpenEarthMap_PoC\data\gsi")
+
+PADDY_ORG = ROOT / "raw" / "paddy_572" / "org"
+WATER_ORG = ROOT / "working" / "water_572_fixed" / "org"
+ROAD_ORG = ROOT / "raw" / "road_572" / "org"
+
+ROAD_LABELS = ROOT / "prepared" / "road_572" / "labels"
+
+ROAD_CLASS = 4
+IGNORE = 255
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def image_index(directory):
+    return sorted(
+        p for p in directory.rglob("*.png")
+        if p.is_file()
+    )
+
+
+# ------------------------------------------------------------
+# Road positive-bearing / all-ignore split
+# ------------------------------------------------------------
+
 from PIL import Image
-import torch
+import numpy as np
 
-from src.model import build_model, rgb_to_tensor
-
-
-ORG_DIR = Path(
-    r"C:\OpenEarthMap_PoC\data\gsi\raw\road_572\org"
-)
-
-LABEL_DIR = Path(
-    r"C:\OpenEarthMap_PoC\data\gsi\prepared\road_572\labels"
-)
-
-BASE_MODEL = Path(
-    r"C:\OpenEarthMap_PoC\OpenEarthMap-SAR\src\Semantic_Segemtation"
-    r"\pretrained\RGB_Real_5_u-efficientnet-b4.pth"
-)
-
-DEVICE = "cpu"
-NUM_THREADS = 2
-TARGET_CLASS = 4
-
-CLASS_NAMES = {
-    0: "Background / Unlabelled",
-    1: "Bareland",
-    2: "Grass / Rangeland",
-    3: "Pavement / Developed space",
-    4: "Road",
-    5: "Tree",
-    6: "Water",
-    7: "Agriculture",
-    8: "Buildings",
+road_images = {
+    p.relative_to(ROAD_ORG): p
+    for p in image_index(ROAD_ORG)
 }
 
-
-torch.set_num_threads(NUM_THREADS)
-
-model = build_model(BASE_MODEL, DEVICE)
-model.eval()
-
-image_paths = {
-    p.relative_to(ORG_DIR): p
-    for p in ORG_DIR.rglob("*.png")
+road_labels = {
+    p.relative_to(ROAD_LABELS): p
+    for p in image_index(ROAD_LABELS)
 }
 
-label_paths = {
-    p.relative_to(LABEL_DIR): p
-    for p in LABEL_DIR.rglob("*.png")
-}
+if road_images.keys() != road_labels.keys():
+    raise RuntimeError("Road image/label pairing mismatch")
 
-if image_paths.keys() != label_paths.keys():
-    missing_labels = image_paths.keys() - label_paths.keys()
-    missing_images = label_paths.keys() - image_paths.keys()
+positive_ids = []
+all_ignore_ids = []
 
-    raise RuntimeError(
-        f"Pairing mismatch: "
-        f"missing_labels={len(missing_labels)}, "
-        f"missing_images={len(missing_images)}"
-    )
+for rel in sorted(road_images):
+    with Image.open(road_labels[rel]) as im:
+        label = np.asarray(im, dtype=np.uint8)
 
-
-argmax_counts = Counter()
-
-probability_sums = np.zeros(9, dtype=np.float64)
-
-positive_pixels = 0
-positive_images = 0
+    if np.any(label == ROAD_CLASS):
+        positive_ids.append(rel.as_posix())
+    else:
+        all_ignore_ids.append(rel.as_posix())
 
 
-with torch.no_grad():
+ids = sorted(positive_ids)
+rng = random.Random(SEED)
+rng.shuffle(ids)
 
-    for index, relative in enumerate(sorted(image_paths), start=1):
+n_train = int(len(ids) * TRAIN_RATIO)
+n_train = max(1, min(n_train, len(ids) - 1))
 
-        with Image.open(image_paths[relative]) as image:
-            rgb = np.asarray(
-                image.convert("RGB"),
-                dtype=np.uint8,
-            )
+road_train = ids[:n_train]
+road_val = ids[n_train:]
 
-        with Image.open(label_paths[relative]) as image:
-            label = np.asarray(
-                image,
-                dtype=np.uint8,
-            )
+# Pilot subset: exactly one Road sample per 1028 logical steps.
+PILOT_ROAD_COUNT = 1028
 
-        positive = label == TARGET_CLASS
+if len(road_train) < PILOT_ROAD_COUNT:
+    raise RuntimeError("Road train pool smaller than pilot target")
 
-        count = int(positive.sum())
+pilot_rng = random.Random(SEED)
+road_pilot_train = sorted(
+    pilot_rng.sample(road_train, PILOT_ROAD_COUNT)
+)
 
-        if count == 0:
-            continue
 
-        positive_images += 1
-        positive_pixels += count
+print("=" * 72)
+print("ROAD SPLIT")
+print("=" * 72)
+print("positive-bearing =", len(positive_ids))
+print("all-ignore =", len(all_ignore_ids))
+print("train pool =", len(road_train))
+print("validation =", len(road_val))
+print("Pilot Road samples =", len(road_pilot_train))
+print("unused train-pool samples in 1-epoch Pilot =", len(road_train) - len(road_pilot_train))
 
-        tensor = (
-            rgb_to_tensor(rgb)
-            .unsqueeze(0)
-            .to(DEVICE)
-        )
 
-        logits = model(tensor)
+# ------------------------------------------------------------
+# Byte-identical source-image overlap
+# ------------------------------------------------------------
 
-        probabilities = torch.softmax(
-            logits,
-            dim=1,
-        )[0]
-
-        predicted = torch.argmax(
-            logits,
-            dim=1,
-        )[0]
-
-        positive_t = torch.from_numpy(
-            positive
-        ).to(DEVICE)
-
-        selected_predictions = predicted[
-            positive_t
-        ]
-
-        counts = torch.bincount(
-            selected_predictions,
-            minlength=9,
-        ).cpu().numpy()
-
-        for class_id, class_count in enumerate(counts):
-            argmax_counts[class_id] += int(class_count)
-
-        for class_id in range(9):
-            probability_sums[class_id] += (
-                probabilities[class_id][positive_t]
-                .double()
-                .sum()
-                .item()
-            )
-
-        if index % 100 == 0:
-            print(
-                f"processed {index}/{len(image_paths)} images; "
-                f"positive images={positive_images}; "
-                f"positive pixels={positive_pixels}"
-            )
+def hash_set(directory):
+    files = image_index(directory)
+    hashes = {sha256(p) for p in files}
+    return len(files), hashes
 
 
 print()
 print("=" * 72)
-print("GSI ROAD POSITIVE — ORIGINAL BASE CONFLICT DIAGNOSIS")
+print("SOURCE IMAGE SHA256 OVERLAP")
 print("=" * 72)
 
-print()
-print("INVENTORY")
-print("image count =", len(image_paths))
-print("positive-bearing images =", positive_images)
-print("positive pixels =", positive_pixels)
+paddy_n, paddy_hash = hash_set(PADDY_ORG)
+water_n, water_hash = hash_set(WATER_ORG)
+road_n, road_hash = hash_set(ROAD_ORG)
+
+print("Paddy images =", paddy_n, "unique SHA =", len(paddy_hash))
+print("Water images =", water_n, "unique SHA =", len(water_hash))
+print("Road images =", road_n, "unique SHA =", len(road_hash))
 
 print()
-print("BASE ARGMAX ON ROAD POSITIVE PIXELS")
-
-for class_id in range(9):
-
-    count = argmax_counts[class_id]
-
-    percentage = (
-        100.0 * count / positive_pixels
-        if positive_pixels
-        else 0.0
-    )
-
-    print(
-        f"{class_id} {CLASS_NAMES[class_id]}: "
-        f"{count:,} "
-        f"({percentage:.4f}%)"
-    )
-
+print("Paddy ∩ Road =", len(paddy_hash & road_hash))
+print("Water ∩ Road =", len(water_hash & road_hash))
+print("Paddy ∩ Water =", len(paddy_hash & water_hash))
 
 print()
-print("MEAN BASE PROBABILITY ON ROAD POSITIVE PIXELS")
-
-for class_id in range(9):
-
-    mean_probability = (
-        probability_sums[class_id] / positive_pixels
-        if positive_pixels
-        else 0.0
-    )
-
-    print(
-        f"{class_id} {CLASS_NAMES[class_id]}: "
-        f"{mean_probability:.6f}"
-    )
-
-
-print()
-print("=" * 72)
-
-print(
-    "Road argmax percent =",
-    100.0 * argmax_counts[TARGET_CLASS] / positive_pixels,
-)
-
-print(
-    "Road mean probability =",
-    probability_sums[TARGET_CLASS] / positive_pixels,
-)
-
 print("=" * 72)
