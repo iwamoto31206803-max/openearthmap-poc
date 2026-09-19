@@ -1,1 +1,6 @@
-python -c "from pathlib import Path; import numpy as np; from PIL import Image; from collections import Counter,defaultdict; root=Path(r'C:\OpenEarthMap_PoC\data\gsi\raw\road_572'); orgs={p.relative_to(root/'org'):p for p in (root/'org').rglob('*.png')}; vals={p.relative_to(root/'val'):p for p in (root/'val').rglob('*.png')}; files=[]; colors=Counter(); total=0; exec('for k in sorted(orgs):\n o=np.asarray(Image.open(orgs[k]).convert(\"RGB\")); v=np.asarray(Image.open(vals[k]).convert(\"RGB\")); d=np.any(v!=o,axis=2); r=np.all(v==[255,0,0],axis=2); m=d & ~r; n=int(m.sum());\n if n:\n  files.append((str(k),n)); total+=n; colors.update(map(tuple,v[m].tolist()))'); print('non-red mismatch total =',total); print('affected files =',len(files)); print('files =',files); print('top val colors =',colors.most_common(20))"
+python -m src.training.prepare_gsi_labels ^
+  C:\OpenEarthMap_PoC\data\gsi\raw\road_572 ^
+  C:\OpenEarthMap_PoC\data\gsi\prepared\road_572 ^
+  --gsi-category road ^
+  --oem-class-id 4 ^
+  --label-color 255,0,0
