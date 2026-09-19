@@ -5,8 +5,8 @@
 Phase A v0.3 preservation-only replayを維持したまま、GSI Water positiveをOEM8 class 6へ
 明示的に教師化する実験経路である。Phase B v0.1のSACLAJ development evaluationではWaterが
 89%まで改善した一方、Agricultureと一部Tree subtypeにtrade-offが見られた。v0.2はそのbalanceを
-確認するため、**Water source objective全体のweightだけを0.5へ下げる**。v0.2の実装とsynthetic
-testは完了しているが、実データPilotは未実行である。SACLAJはdevelopment evaluationであり、
+確認するため、**Water source objective全体のweightだけを0.5へ下げた**。v0.1 / v0.2の
+実データPilotとSACLAJ development evaluationは完了している。SACLAJはdevelopment evaluationであり、
 manual GTまたはproduction accuracyの根拠ではない。
 
 ## 固定仕様
@@ -94,8 +94,24 @@ IDファイルに座標や画像内容は格納しない。run directory自体�
 training中は50 logical stepsごとにstep/total、消費したWater数、running Paddy CE、raw Water CE、
 replay KLを表示する。validationではこのprogress logを出さず、IDやpathも表示しない。
 
+## 実データPilot結果
+
+v0.1は`beta_water=1.0`、v0.2は`beta_water=0.5`である。両者ともOriginal Base start、
+Paddy / Water positive supervision、Paddy all-ignore replay、Water all-ignore未使用とし、1,028
+logical steps / optimizer updatesのうちWaterを553 stepsで使用した。v0.2ではWater positive CEと
+Water unknown Base-preservation KLを含むWater source objective全体に0.5を掛けた。
+
+v0.2 training run `20260919T053943_488504Z_000833f3`は`completed`で、experimentは
+`gsi_phase_b_v0.2`、best checkpoint SHA256は
+`ff721d91959da847adee2d26639384f03bfa4ded5ea118e40ae16576260c4b6e`である。validationは
+Paddy agreement 0.848088094...、Paddy mean probability 0.578560966...、Water agreement
+0.717916463...、Water mean probability 0.566900472...、replay preservation KL 0.476312183...であった。
+
+SACLAJ development evaluationと入力identityの結果・解釈は
+[Phase B Water milestone](PHASE_B_WATER_MILESTONE_20260919.md)に固定する。
+
 ## 制約
 
-実データ件数、入力監査、GPU memory、所要時間、Base hash、Water scheduleの実run inventory、
-checkpoint再読込、SACLAJ/QGIS上の変化は **company-PC Pilotで要確認** である。model weights、GSI data、
+本結果はSACLAJ development evaluationであり、nationwide accuracy、generalization、production
+readinessを示さない。v0.2の最適性やTree issueの解決も示さない。model weights、GSI data、
 GeoTIFF/GeoPackage、run outputs、SACLAJのCSV・座標・地点別結果・patchはGitへ追加しない。
