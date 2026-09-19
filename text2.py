@@ -1,21 +1,20 @@
 from pathlib import Path
 import hashlib
-import random
 
+import numpy as np
+from PIL import Image
 
-SEED = 42
-TRAIN_RATIO = 0.8
 
 ROOT = Path(r"C:\OpenEarthMap_PoC\data\gsi")
 
 PADDY_ORG = ROOT / "raw" / "paddy_572" / "org"
+PADDY_LABEL = ROOT / "prepared" / "paddy_572" / "labels"
+
 WATER_ORG = ROOT / "working" / "water_572_fixed" / "org"
+WATER_LABEL = ROOT / "prepared" / "water_572" / "labels"
+
 ROAD_ORG = ROOT / "raw" / "road_572" / "org"
-
-ROAD_LABELS = ROOT / "prepared" / "road_572" / "labels"
-
-ROAD_CLASS = 4
-IGNORE = 255
+ROAD_LABEL = ROOT / "prepared" / "road_572" / "labels"
 
 
 def sha256(path):
@@ -26,106 +25,105 @@ def sha256(path):
     return h.hexdigest()
 
 
-def image_index(directory):
-    return sorted(
-        p for p in directory.rglob("*.png")
-        if p.is_file()
-    )
+def index_by_hash(org_dir, label_dir):
+    result = {}
+
+    labels = {
+        p.relative_to(label_dir): p
+        for p in label_dir.rglob("*.png")
+    }
+
+    for image in org_dir.rglob("*.png"):
+        rel = image.relative_to(org_dir)
+
+        if rel not in labels:
+            raise RuntimeError(f"Missing label: {rel}")
+
+        digest = sha256(image)
+
+        result[digest] = {
+            "image": image,
+            "label": labels[rel],
+            "id": rel.as_posix(),
+        }
+
+    return result
 
 
-# ------------------------------------------------------------
-# Road positive-bearing / all-ignore split
-# ------------------------------------------------------------
-
-from PIL import Image
-import numpy as np
-
-road_images = {
-    p.relative_to(ROAD_ORG): p
-    for p in image_index(ROAD_ORG)
-}
-
-road_labels = {
-    p.relative_to(ROAD_LABELS): p
-    for p in image_index(ROAD_LABELS)
-}
-
-if road_images.keys() != road_labels.keys():
-    raise RuntimeError("Road image/label pairing mismatch")
-
-positive_ids = []
-all_ignore_ids = []
-
-for rel in sorted(road_images):
-    with Image.open(road_labels[rel]) as im:
-        label = np.asarray(im, dtype=np.uint8)
-
-    if np.any(label == ROAD_CLASS):
-        positive_ids.append(rel.as_posix())
-    else:
-        all_ignore_ids.append(rel.as_posix())
+paddy = index_by_hash(PADDY_ORG, PADDY_LABEL)
+water = index_by_hash(WATER_ORG, WATER_LABEL)
+road = index_by_hash(ROAD_ORG, ROAD_LABEL)
 
 
-ids = sorted(positive_ids)
-rng = random.Random(SEED)
-rng.shuffle(ids)
+def inspect_overlap(name, left, left_class, right, right_class):
 
-n_train = int(len(ids) * TRAIN_RATIO)
-n_train = max(1, min(n_train, len(ids) - 1))
+    shared = sorted(set(left) & set(right))
 
-road_train = ids[:n_train]
-road_val = ids[n_train:]
+    print()
+    print("=" * 72)
+    print(name)
+    print("=" * 72)
+    print("shared images =", len(shared))
 
-# Pilot subset: exactly one Road sample per 1028 logical steps.
-PILOT_ROAD_COUNT = 1028
+    both_positive_images = 0
+    total_left_positive = 0
+    total_right_positive = 0
+    total_pixel_overlap = 0
 
-if len(road_train) < PILOT_ROAD_COUNT:
-    raise RuntimeError("Road train pool smaller than pilot target")
+    for digest in shared:
 
-pilot_rng = random.Random(SEED)
-road_pilot_train = sorted(
-    pilot_rng.sample(road_train, PILOT_ROAD_COUNT)
+        a = left[digest]
+        b = right[digest]
+
+        with Image.open(a["label"]) as im:
+            la = np.asarray(im, dtype=np.uint8)
+
+        with Image.open(b["label"]) as im:
+            lb = np.asarray(im, dtype=np.uint8)
+
+        if la.shape != lb.shape:
+            raise RuntimeError("Shared source image has different label dimensions")
+
+        pa = la == left_class
+        pb = lb == right_class
+
+        na = int(pa.sum())
+        nb = int(pb.sum())
+        overlap = int((pa & pb).sum())
+
+        total_left_positive += na
+        total_right_positive += nb
+        total_pixel_overlap += overlap
+
+        if na > 0 and nb > 0:
+            both_positive_images += 1
+
+        print(
+            f"{a['id']} <-> {b['id']}: "
+            f"left_positive={na}, "
+            f"right_positive={nb}, "
+            f"pixel_overlap={overlap}"
+        )
+
+    print()
+    print("both-positive images =", both_positive_images)
+    print("left positive pixels =", total_left_positive)
+    print("right positive pixels =", total_right_positive)
+    print("positive-mask pixel overlap =", total_pixel_overlap)
+
+
+inspect_overlap(
+    "PADDY vs ROAD",
+    paddy,
+    7,
+    road,
+    4,
 )
 
-
-print("=" * 72)
-print("ROAD SPLIT")
-print("=" * 72)
-print("positive-bearing =", len(positive_ids))
-print("all-ignore =", len(all_ignore_ids))
-print("train pool =", len(road_train))
-print("validation =", len(road_val))
-print("Pilot Road samples =", len(road_pilot_train))
-print("unused train-pool samples in 1-epoch Pilot =", len(road_train) - len(road_pilot_train))
-
-
-# ------------------------------------------------------------
-# Byte-identical source-image overlap
-# ------------------------------------------------------------
-
-def hash_set(directory):
-    files = image_index(directory)
-    hashes = {sha256(p) for p in files}
-    return len(files), hashes
-
-
-print()
-print("=" * 72)
-print("SOURCE IMAGE SHA256 OVERLAP")
-print("=" * 72)
-
-paddy_n, paddy_hash = hash_set(PADDY_ORG)
-water_n, water_hash = hash_set(WATER_ORG)
-road_n, road_hash = hash_set(ROAD_ORG)
-
-print("Paddy images =", paddy_n, "unique SHA =", len(paddy_hash))
-print("Water images =", water_n, "unique SHA =", len(water_hash))
-print("Road images =", road_n, "unique SHA =", len(road_hash))
-
-print()
-print("Paddy ∩ Road =", len(paddy_hash & road_hash))
-print("Water ∩ Road =", len(water_hash & road_hash))
-print("Paddy ∩ Water =", len(paddy_hash & water_hash))
-
-print()
-print("=" * 72)
+inspect_overlap(
+    "WATER vs ROAD",
+    water,
+    6,
+    road,
+    4,
+)
