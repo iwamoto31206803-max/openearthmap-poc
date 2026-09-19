@@ -1,4 +1,4 @@
-"""Phase B v0.1: add Water-positive supervision to the Phase A v0.3 objective."""
+"""Phase B: add weighted Water-positive supervision to the Phase A v0.3 objective."""
 
 from __future__ import annotations
 
@@ -131,9 +131,11 @@ def _source_forward(model, teacher, batch, device, target, weight, temperature):
 
 def run_phase_b_epoch(model, paddy_loader, device, optimizer=None, *, teacher, replay_loader,
                       water_loader, schedule=None, lambda_preserve=1.0, temperature=1.0,
-                      alpha=1.0):
+                      alpha=1.0, beta_water=1.0, progress_interval=50,
+                      total_steps=None):
     """Run one Paddy-axis epoch; optional Water never creates another optimizer update."""
     replay.validate_replay(lambda_preserve, temperature, alpha)
+    validate_beta_water(beta_water)
     training = optimizer is not None
     model.train(training); model.encoder.eval(); teacher.requires_grad_(False); teacher.eval()
     schedule = schedule or set()
@@ -155,7 +157,8 @@ def run_phase_b_epoch(model, paddy_loader, device, optimizer=None, *, teacher, r
                 except StopIteration: raise ValueError("Water schedule exceeds Water loader") from None
                 w = _source_forward(model, teacher, water_batch, device, WATER_CLASS,
                                     lambda_preserve, temperature)
-                parts.append(w[0]); batches.append(("water", w, WATER_CLASS)); water_batches += 1
+                parts.append(beta_water * w[0])
+                batches.append(("water", w, WATER_CLASS)); water_batches += 1
             try:
                 replay_batch = next(replay_iter)
             except StopIteration:
@@ -180,6 +183,16 @@ def run_phase_b_epoch(model, paddy_loader, device, optimizer=None, *, teacher, r
                     values["base_agree"] += int(((pred == base.argmax(1)) & unknown).sum())
                 count = int(rm.sum()); replay_sum += rkl.item()*count; replay_pixels += count
             steps += 1; replay_batches += 1
+            if training and progress_interval and steps % progress_interval == 0:
+                expected_steps = total_steps if total_steps is not None else "?"
+                paddy_ce = sources["paddy"]["ce"] / sources["paddy"]["p"]
+                water_ce = (sources["water"]["ce"] / sources["water"]["p"]
+                            if sources["water"]["p"] else None)
+                replay_kl_running = replay_sum / replay_pixels
+                water_text = f"{water_ce:.6f}" if water_ce is not None else "n/a"
+                print(f"Phase B step {steps}/{expected_steps}; Water {water_batches}/{len(schedule)}; "
+                      f"Paddy CE {paddy_ce:.6f}; Water CE {water_text}; "
+                      f"replay KL {replay_kl_running:.6f}")
     if not steps or not sources["paddy"]["p"] or (schedule and water_batches != len(schedule)):
         raise ValueError("Incomplete Phase B epoch")
     def metrics(name, target):
@@ -194,7 +207,7 @@ def run_phase_b_epoch(model, paddy_loader, device, optimizer=None, *, teacher, r
     pm, wm = metrics("paddy", 7), metrics("water", 6)
     replay_kl = replay_sum/replay_pixels
     loss = pm["positive_ce"] + lambda_preserve*pm["unknown_preservation_kl"] + alpha*lambda_preserve*replay_kl
-    if wm: loss += wm["positive_ce"] + lambda_preserve*wm["unknown_preservation_kl"]
+    if wm: loss += beta_water * (wm["positive_ce"] + lambda_preserve*wm["unknown_preservation_kl"])
     return {"loss": loss, "paddy": pm, "water": wm,
             "replay": {"preservation_kl": replay_kl, "pixel_count": replay_pixels,
                        "batch_count": replay_batches},
@@ -203,8 +216,9 @@ def run_phase_b_epoch(model, paddy_loader, device, optimizer=None, *, teacher, r
 
 
 def validate_phase_b(model, paddy_loader, water_loader, replay_loader, device, *, teacher,
-                     lambda_preserve=1.0, temperature=1.0, alpha=1.0):
+                     lambda_preserve=1.0, temperature=1.0, alpha=1.0, beta_water=1.0):
     """Evaluate every validation sample once and report each source separately."""
+    validate_beta_water(beta_water)
     model.eval(); model.encoder.eval(); teacher.requires_grad_(False); teacher.eval()
     def positive(loader, target):
         totals = {"ce":0.,"kl":0.,"p":0,"u":0,"agree":0,"prob":0.,"base_agree":0}
@@ -234,8 +248,9 @@ def validate_phase_b(model, paddy_loader, water_loader, replay_loader, device, *
     if not pixels: raise ValueError("Replay validation is empty")
     paddy, water = positive(paddy_loader, PADDY_CLASS), positive(water_loader, WATER_CLASS)
     rkl=replay_sum/pixels
-    loss=sum((paddy["positive_ce"],lambda_preserve*paddy["unknown_preservation_kl"],
-              water["positive_ce"],lambda_preserve*water["unknown_preservation_kl"],alpha*lambda_preserve*rkl))
+    loss=sum((paddy["positive_ce"], lambda_preserve*paddy["unknown_preservation_kl"],
+              beta_water*(water["positive_ce"]+lambda_preserve*water["unknown_preservation_kl"]),
+              alpha*lambda_preserve*rkl))
     return {"loss":loss,"paddy":paddy,"water":water,
             "replay":{"preservation_kl":rkl,"student_base_argmax_agreement":agreed/pixels,"pixel_count":pixels}}
 
@@ -247,6 +262,12 @@ def _audit_manifest(path, category, target):
     return value
 
 
+def validate_beta_water(beta_water):
+    """Reject weights that cannot define a finite, non-negative Water objective."""
+    if not math.isfinite(beta_water) or beta_water < 0:
+        raise ValueError("beta_water must be finite and >= 0")
+
+
 def train(args):
     if args.seed != 42 or args.train_ratio != .8 or args.batch_size != 1:
         raise ValueError("Phase B v0.1 requires seed=42, train-ratio=0.8, batch-size=1")
@@ -254,6 +275,7 @@ def train(args):
     if epochs < 1 or args.num_threads < 1 or not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
         raise ValueError("Invalid training settings")
     replay.validate_replay(args.lambda_preserve, args.temperature, args.alpha_replay)
+    validate_beta_water(args.beta_water)
     seed_everything(args.seed); torch.set_num_threads(args.num_threads); device = resolve_device(args.device)
     base = args.base_model.resolve(); base_sha = _sha256(base)
     if args.base_sha256 and base_sha != args.base_sha256.lower(): raise ValueError("Base SHA256 mismatch")
@@ -283,12 +305,15 @@ def train(args):
              "water_positive_validation_ids": wv}
     for name, samples in files.items(): write_json(run_dir/(name+".json"), [s.source_image_id for s in samples])
     schedule = water_schedule(len(pt), len(wt), 42)
-    manifest = {"schema_version": 4, "experiment": "gsi_phase_b_v0.1", "training_mode": "phase_b_v0.1",
+    experiment = "gsi_phase_b_v0.1" if args.beta_water == 1.0 else "gsi_phase_b_v0.2"
+    manifest = {"schema_version": 4, "experiment": experiment, "model_version": experiment,
+        "training_mode": "phase_b_v0.1_compatible" if args.beta_water == 1.0 else "phase_b_v0.2",
         "status": "running", "run_id": run_id, "timestamp_utc": timestamp.isoformat(),
         "base_model_path": str(base), "base_model_sha256": base_sha,
         "student_initialization_checkpoint_sha256": base_sha, "teacher_checkpoint_sha256": base_sha,
         "original_base_start": True, "git_commit_sha": replay.current_git_commit(), "seed": 42,
         "lambda_preserve": args.lambda_preserve, "temperature": args.temperature, "alpha_replay": args.alpha_replay,
+        "beta_water": args.beta_water,
         "epochs": epochs, "batch_size": 1, "learning_rate": args.learning_rate,
         "optimizer": {"name":"AdamW","weight_decay":.01,"betas":[.9,.999],"eps":1e-8},
         "architecture":{"library":"segmentation_models_pytorch","model":"Unet",**MODEL_KWARGS}, "preprocessing":PREPROCESSING,
@@ -301,7 +326,7 @@ def train(args):
         "split_method":"sort IDs, random.Random(seed).shuffle, floor(n*ratio), clamp to [1,n-1]",
         "water_schedule":{"deterministic":True,"seed":42,"method":"random.sample slot set; consume next Water train sample at each selected slot",
                           "slot_count":len(pt),"water_slot_count":len(wt)},
-        "loss":"L_paddy + optional L_water + alpha_replay * L_replay; one backward and optimizer step",
+        "loss":"L_paddy + beta_water * optional L_water + alpha_replay * L_replay; L_water = Water positive CE + lambda_preserve * T^2 * Water unknown KL(Base || Student); one backward and optimizer step",
         "prepared_manifest_sha256":{"paddy":_sha256(pp),"water":_sha256(wp)},
         "id_files":{}, "epoch_metrics":[], "best_checkpoint":None, "best_checkpoint_sha256":None,
         "best_epoch":None, "best_validation_loss":None,
@@ -322,16 +347,19 @@ def train(args):
         if args.preflight:
             manifest["preflight_metrics"] = run_phase_b_epoch(model, islice(pl,1), device, teacher=teacher,
                 replay_loader=list(islice(rl,1)), water_loader=list(islice(wl,1)), schedule={0},
-                lambda_preserve=args.lambda_preserve, temperature=args.temperature, alpha=args.alpha_replay)
+                lambda_preserve=args.lambda_preserve, temperature=args.temperature, alpha=args.alpha_replay,
+                beta_water=args.beta_water, total_steps=1)
             manifest["status"]="preflight_passed"; return run_dir
         for epoch in range(1, epochs+1):
             train_schedule = {0} if args.smoke_test else schedule
             training = run_phase_b_epoch(model, islice(pl,1) if args.smoke_test else pl, device, optimizer,
                 teacher=teacher,replay_loader=list(islice(rl,1)) if args.smoke_test else rl,
                 water_loader=list(islice(wl,1)) if args.smoke_test else wl,schedule=train_schedule,
-                lambda_preserve=args.lambda_preserve,temperature=args.temperature,alpha=args.alpha_replay)
+                lambda_preserve=args.lambda_preserve,temperature=args.temperature,alpha=args.alpha_replay,
+                beta_water=args.beta_water,total_steps=1 if args.smoke_test else len(pt))
             validation = validate_phase_b(model,pvl,wvl,rvl,device,teacher=teacher,
-                lambda_preserve=args.lambda_preserve,temperature=args.temperature,alpha=args.alpha_replay)
+                lambda_preserve=args.lambda_preserve,temperature=args.temperature,alpha=args.alpha_replay,
+                beta_water=args.beta_water)
             relative=f"checkpoints/epoch_{epoch:03d}.pth"; save_checkpoint(run_dir/relative,model)
             manifest["epoch_metrics"].append({"epoch":epoch,"training":training,"validation":validation,"checkpoint":relative})
             if manifest["best_validation_loss"] is None or validation["loss"] < manifest["best_validation_loss"]:
@@ -359,6 +387,7 @@ def make_parser():
     parser.add_argument("--batch-size",type=int,default=1); parser.add_argument("--learning-rate",type=float,default=1e-4)
     parser.add_argument("--lambda-preserve",type=float,default=1.); parser.add_argument("--temperature",type=float,default=1.)
     parser.add_argument("--alpha-replay",type=float,default=1.); parser.add_argument("--device",choices=("cpu","cuda","auto"),default="cpu")
+    parser.add_argument("--beta-water",type=float,default=1.,help="weight for the complete Water source objective")
     parser.add_argument("--num-threads",type=int,default=2)
     checks=parser.add_mutually_exclusive_group(); checks.add_argument("--preflight",action="store_true"); checks.add_argument("--smoke-test",action="store_true")
     return parser

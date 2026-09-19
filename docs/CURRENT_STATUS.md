@@ -1,6 +1,6 @@
 # Current Status
 
-Updated: 2026-09-18
+Updated: 2026-09-19
 
 ## Project goal
 
@@ -52,7 +52,12 @@ Water teacher audit:
 
 Paddy / Water datasets間でbyte-identicalなsource imageのSHA256 overlapは **0** である。
 
-次のexperiment conceptは **Phase B v0.1として実装済み** である。
+Phase B v0.1の実データPilotでは、SACLAJ development evaluationでWater 89%（Phase A v0.3は
+72%）まで改善した一方、Rice 83%、Other crop 53%、Agriculture leakage 1.377%となり、
+Agricultureと一部Tree subtypeにtrade-offが見られた。入力identityはv0.3とsampled IDs
+1000/1000が一致し、common-success 999地点でpatch/Base各比較のmismatch 0を確認した。
+
+次のexperiment conceptは **Phase B v0.2として実装済み、実データ未実行** である。
 
 - Original Baseから開始する。
 - 既存v0.3のPaddy positive supervisionを維持する。
@@ -62,10 +67,11 @@ Paddy / Water datasets間でbyte-identicalなsource imageのSHA256 overlapは **
 - Water unknown pixelsではBase preservationを使用する。
 - 最初のPilotではWater all-ignore imagesをreplayに追加しない。
 - v0.3との比較可能性のため、optimizer updatesは1,028に保つ。
+- v0.1の条件を維持し、Water source objective全体のweightだけを0.5にする。
 
-実装と会社PCでの実行手順は [Phase B v0.1](GSI_PHASE_B_TRAINING.md) を参照すること。
-synthetic testまで完了しているが、**実データによるpreflight / training / evaluationは未実行** であり、
-Phase Bの実験結果や改善はまだ主張しない。
+実装と会社PCでの実行手順は [Phase B training](GSI_PHASE_B_TRAINING.md) を参照すること。
+v0.2はsynthetic testまで完了しているが、**実データによるpreflight / training / evaluationは未実行**
+であり、v0.2の結果や改善はまだ主張しない。
 
 ## Evaluation status
 
@@ -94,7 +100,7 @@ Manual GTは直近のフェーズではない。次のいずれかに該当す�
 - 全国へのgeneralizationは主張できない。
 - v0.3はproduction modelではない。
 - SACLAJはfinal holdoutではない。
-- Waterは未解決のriskである。
+- Water改善とAgriculture/Tree保持のbalanceは未解決である。
 - Base modelのlicensingおよびenterprise-use条件は未解決である。
 - ローカルのrestricted dataはGitHubへ追加しない。
-- Phase B v0.1は実装済みだが、company-PC Pilotと実データ評価は未実行である。
+- Phase B v0.2は実装済みだが、company-PC Pilotと実データ評価は未実行である。

@@ -42,6 +42,51 @@ def test_deterministic_dispersed_water_schedule():
     with pytest.raises(ValueError): phase_b.water_schedule(2,3)
 
 
+@pytest.mark.parametrize("value", [-0.1, float("nan"), float("inf"), -float("inf")])
+def test_invalid_beta_water_rejected(value):
+    with pytest.raises(ValueError, match="beta_water"):
+        phase_b.validate_beta_water(value)
+
+
+def test_beta_water_cli_default_preserves_v01():
+    parser = phase_b.make_parser()
+    required = ["--org-dir", "p", "--prepared-dir", "p", "--water-org-dir", "w",
+                "--water-prepared-dir", "w"]
+    assert parser.parse_args(required).beta_water == 1.0
+    assert parser.parse_args(required + ["--beta-water", "0.5"]).beta_water == 0.5
+
+
+def test_beta_scales_only_complete_water_objective():
+    student=TinyModel(); teacher=copy.deepcopy(student).requires_grad_(False).eval()
+    paddy,replay_batch=batches(); water=water_batch()
+    common=dict(teacher=teacher,replay_loader=[replay_batch],water_loader=[water],schedule={0})
+    full=phase_b.run_phase_b_epoch(student,[paddy],"cpu",beta_water=1.0,**common)
+    half=phase_b.run_phase_b_epoch(student,[paddy],"cpu",beta_water=0.5,**common)
+    water_objective=full["water"]["positive_ce"]+full["water"]["unknown_preservation_kl"]
+    assert half["loss"] == pytest.approx(full["loss"] - 0.5*water_objective)
+    assert half["paddy"] == full["paddy"] and half["replay"] == full["replay"]
+    assert half["water"] == full["water"]  # source metrics remain raw
+
+
+def test_beta_has_no_effect_without_water_and_zero_removes_water_gradient():
+    student=TinyModel(); teacher=copy.deepcopy(student).requires_grad_(False).eval()
+    paddy,replay_batch=batches()
+    common=dict(teacher=teacher,replay_loader=[replay_batch],water_loader=[],schedule=set())
+    zero=phase_b.run_phase_b_epoch(student,[paddy],"cpu",beta_water=0.0,**common)
+    large=phase_b.run_phase_b_epoch(student,[paddy],"cpu",beta_water=9.0,**common)
+    assert zero["loss"] == pytest.approx(large["loss"])
+
+    images,labels,mask=water_batch(); logits=student(images); base=teacher(images)
+    water_loss,_,_=phase_b.positive_preservation_losses(logits,base,labels,mask,6)
+    gradients=torch.autograd.grad(0.0*water_loss,tuple(student.parameters()),allow_unused=True)
+    assert all(value is None or torch.count_nonzero(value) == 0 for value in gradients)
+
+
+def test_phase_b_inventory_regression():
+    schedule=phase_b.water_schedule(1028,553,42)
+    assert len(schedule) == 553 and min(schedule) >= 0 and max(schedule) < 1028
+
+
 @pytest.mark.parametrize("with_water", [False, True])
 def test_logical_step_composition_and_single_update(with_water):
     student=TinyModel(); teacher=copy.deepcopy(student).requires_grad_(False).eval()
@@ -73,7 +118,10 @@ def make_water_data(tmp_path):
     return org,prepared
 
 
-def test_water_all_ignore_excluded_and_phase_b_smoke_starts_from_base(tmp_path,monkeypatch):
+@pytest.mark.parametrize(("beta", "experiment"), [(1.0, "gsi_phase_b_v0.1"),
+                                                   (0.5, "gsi_phase_b_v0.2")])
+def test_water_all_ignore_excluded_and_phase_b_smoke_starts_from_base(
+        tmp_path, monkeypatch, beta, experiment):
     import segmentation_models_pytorch as smp
     monkeypatch.setattr(smp,"Unet",lambda **kwargs:TinyModel())
     monkeypatch.setattr(phase_b,"PADDY_COUNTS",(5,4)); monkeypatch.setattr(phase_b,"WATER_COUNTS",(3,2))
@@ -82,9 +130,10 @@ def test_water_all_ignore_excluded_and_phase_b_smoke_starts_from_base(tmp_path,m
     args=phase_b.make_parser().parse_args(["--org-dir",str(org),"--prepared-dir",str(prepared),
         "--water-org-dir",str(water_org),"--water-prepared-dir",str(water_prepared),
         "--base-model",str(base),"--base-sha256",_sha256(base),"--output-dir",str(tmp_path/"runs"),
-        "--num-threads","1","--smoke-test"])
+        "--num-threads","1","--beta-water",str(beta),"--smoke-test"])
     run=phase_b.train(args); manifest=json.loads((run/"run_manifest.json").read_text())
-    assert manifest["experiment"]=="gsi_phase_b_v0.1" and manifest["original_base_start"] is True
+    assert manifest["experiment"]==experiment and manifest["original_base_start"] is True
+    assert manifest["model_version"]==experiment and manifest["beta_water"]==beta
     assert manifest["student_initialization_checkpoint_sha256"]==manifest["teacher_checkpoint_sha256"]==_sha256(base)
     assert manifest["water_positive_train_count"]==2 and manifest["water_positive_validation_count"]==1
     assert manifest["water_all_ignore_count"]==2 and manifest["water_all_ignore_usage"].startswith("not used")
