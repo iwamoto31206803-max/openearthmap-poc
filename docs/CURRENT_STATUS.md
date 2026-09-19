@@ -52,12 +52,9 @@ Water teacher audit:
 
 Paddy / Water datasets間でbyte-identicalなsource imageのSHA256 overlapは **0** である。
 
-Phase B v0.1の実データPilotでは、SACLAJ development evaluationでWater 89%（Phase A v0.3は
-72%）まで改善した一方、Rice 83%、Other crop 53%、Agriculture leakage 1.377%となり、
-Agricultureと一部Tree subtypeにtrade-offが見られた。入力identityはv0.3とsampled IDs
-1000/1000が一致し、common-success 999地点でpatch/Base各比較のmismatch 0を確認した。
-
-次のexperiment conceptは **Phase B v0.2として実装済み、実データ未実行** である。
+Phase B v0.1 / v0.2の実データPilotとSACLAJ development evaluationは完了した。
+v0.1は`beta_water=1.0`、v0.2はWater source objective全体だけを0.5倍し、両者とも
+1,028 logical steps / optimizer updates、Water 553 stepsで実行した。
 
 - Original Baseから開始する。
 - 既存v0.3のPaddy positive supervisionを維持する。
@@ -67,11 +64,15 @@ Agricultureと一部Tree subtypeにtrade-offが見られた。入力identityはv
 - Water unknown pixelsではBase preservationを使用する。
 - 最初のPilotではWater all-ignore imagesをreplayに追加しない。
 - v0.3との比較可能性のため、optimizer updatesは1,028に保つ。
-- v0.1の条件を維持し、Water source objective全体のweightだけを0.5にする。
+- v0.1は`beta_water=1.0`、v0.2はその他の条件を維持してWater source objective全体の
+  weightだけを0.5にする。
 
-実装と会社PCでの実行手順は [Phase B training](GSI_PHASE_B_TRAINING.md) を参照すること。
-v0.2はsynthetic testまで完了しているが、**実データによるpreflight / training / evaluationは未実行**
-であり、v0.2の結果や改善はまだ主張しない。
+主要結果は、v0.3 / v0.1 / v0.2の順にRice 87 / 83 / 85%、Other crop 61 / 53 / 57%、
+Agriculture leakage 2.625 / 1.377 / 2.5%、Water 72 / 89 / 87%である。v0.2はWater改善を
+かなり維持しつつAgriculture側を一部戻す妥協点候補だが、Tree系は明確に回復しなかった。
+したがってWater単独の細かいweight tuningは一旦停止し、multi-teacher GSI-only modelへ進む。
+v0.2を最適とは断定せず、v0.1も棄却しない。詳細は
+[Phase B Water milestone](PHASE_B_WATER_MILESTONE_20260919.md)を参照すること。
 
 ## Evaluation status
 
@@ -101,6 +102,7 @@ Manual GTは直近のフェーズではない。次のいずれかに該当す�
 - v0.3はproduction modelではない。
 - SACLAJはfinal holdoutではない。
 - Water改善とAgriculture/Tree保持のbalanceは未解決である。
+- Water weightだけでTree degradationは解決せず、原因もWater weightだけに帰属できない。
 - Base modelのlicensingおよびenterprise-use条件は未解決である。
 - ローカルのrestricted dataはGitHubへ追加しない。
-- Phase B v0.2は実装済みだが、company-PC Pilotと実データ評価は未実行である。
+- 次はRoad / Building / Tree等のteacherを追加し、multi-teacher条件でWater weightを再評価する。
