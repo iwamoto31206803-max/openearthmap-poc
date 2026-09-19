@@ -209,10 +209,27 @@ def test_road_scanner_separates_all_ignore_and_rejects_invalid(tmp_path):
 def test_road_overlap_uses_content_hash_not_filename(tmp_path):
     org,labels=make_road_data(tmp_path); road,_=phase_b.scan_road_dataset(org,labels)
     shared=replace(road[0],source_image_id="totally/different/name")
-    unique=replace(road[0],source_image_id="same-looking-name",image_sha256="0"*64)
-    retained,excluded,references=phase_b.exclude_source_hash_overlap([shared,unique],road)
-    assert retained==[unique] and excluded==[shared] and references==["overlap-001"]
-    assert shared.image_sha256 not in references[0]
+    other_hash="0"*64
+    other_shared=replace(road[0],source_image_id="another/name",image_sha256=other_hash)
+    unique=replace(road[0],source_image_id="same-looking-name",image_sha256="1"*64)
+    paddy=[road[0],replace(road[0],source_image_id="paddy/other",image_sha256=other_hash)]
+    retained,excluded,references=phase_b.exclude_source_hash_overlap(
+        [shared,other_shared,unique],paddy)
+    assert retained==[unique] and excluded==[other_shared,shared]
+    assert references == [phase_b._road_overlap_reference(other_hash),
+                          phase_b._road_overlap_reference(shared.image_sha256)]
+    assert references[0] != references[1]
+    assert all(reference.startswith("overlap-") and len(reference)==24 for reference in references)
+    assert all(raw_hash not in reference
+               for raw_hash in (other_hash,shared.image_sha256) for reference in references)
+
+
+def test_road_overlap_anonymous_reference_is_stable_across_names_and_runs():
+    raw_hash="a"*64
+    first=phase_b._road_overlap_reference(raw_hash)
+    assert first == phase_b._road_overlap_reference(raw_hash)
+    assert first != phase_b._road_overlap_reference("b"*64)
+    assert raw_hash not in first
 
 
 @pytest.mark.parametrize(("beta", "experiment"), [(1.0, "gsi_phase_b_v0.1"),

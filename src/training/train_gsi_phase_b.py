@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 from importlib.metadata import version
 from itertools import islice
 import json
@@ -101,8 +102,14 @@ def exclude_source_hash_overlap(road_samples, paddy_samples):
     excluded = sorted((sample for sample in road_samples if sample.image_sha256 in paddy_hashes),
                       key=lambda sample: (sample.image_sha256, sample.source_image_id))
     retained = [sample for sample in road_samples if sample.image_sha256 not in paddy_hashes]
-    references = [f"overlap-{index:03d}" for index in range(1, len(excluded) + 1)]
+    references = [_road_overlap_reference(sample.image_sha256) for sample in excluded]
     return retained, excluded, references
+
+
+def _road_overlap_reference(image_sha256: str):
+    """Return a stable, domain-separated reference without exposing the source hash."""
+    anonymous = hashlib.sha256(f"road-overlap:{image_sha256}".encode("ascii")).hexdigest()
+    return f"overlap-{anonymous[:16]}"
 
 
 def road_pilot_samples(train_pool, count=ROAD_PILOT_COUNT, seed=DEFAULT_SEED):

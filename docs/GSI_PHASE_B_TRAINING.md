@@ -28,7 +28,9 @@ PaddyとRoadにはsource image SHA256でbyte-identicalな7 images（Paddy positi
 replay train 1）がある。Water/Road overlapは0である。v0.3ではfilenameやnumeric IDではなく画像
 content SHA256で、この7件をRoad positive candidate poolから**split前に除外**する。Paddy splitと
 replay splitは変えない。manifestには件数と、raw hashを露出しない決定的なsanitized referenceを
-記録する。source間positive/unknown競合を一般化して解決するmulti-teacher-aware maskingは今回
+記録する。referenceは`sha256("road-overlap:" + source SHA256)`の先頭16桁を使うため、filenameや
+numeric IDに依存せず、同じsource imageをrun間で再照合できる。source間positive/unknown競合を
+一般化して解決するmulti-teacher-aware maskingは今回
 導入せず、future workとする。
 
 除外後のRoad candidateをseed 42、既存80/20規則でsplitし、Road train poolからseed 42で重複なく
