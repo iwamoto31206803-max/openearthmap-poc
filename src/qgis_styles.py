@@ -21,6 +21,13 @@ ROAD_CHANGE_STYLES = {
     5: ("Road -> Other", (230, 40, 60, 255)),
 }
 
+# Important progression transitions use stable, deliberately contrasting colours.
+IMPORTANT_TRANSITION_COLORS = {
+    24: (70, 230, 70), 34: (0, 170, 255), 43: (255, 170, 0),
+    54: (180, 40, 220), 58: (255, 90, 170), 74: (40, 220, 180),
+    84: (255, 30, 30), 85: (120, 70, 255),
+}
+
 
 def hex_color(rgba: tuple[int, int, int, int]) -> str:
     r, g, b, _ = rgba
@@ -127,6 +134,33 @@ def write_road_change_style(raster_path: Path, opacity: float = 0.85) -> Path:
         "  </pipe>\n  <blendMode>0</blendMode>\n</qgis>\n"
     )
     style_path.write_text(qml, encoding="utf-8")
+    return style_path
+
+
+def write_transition_style(raster_path: Path, opacity: float = 0.9) -> Path:
+    """Write a deterministic categorical style for changed-only transition codes."""
+    entries = ['          <paletteEntry value="0" color="#000000" alpha="0" label="Unchanged"/>']
+    for source in range(9):
+        for target in range(9):
+            if source == target:
+                continue
+            code = source * 10 + target
+            rgb = IMPORTANT_TRANSITION_COLORS.get(
+                code, ((code * 47) % 206 + 25, (code * 83) % 206 + 25, (code * 131) % 206 + 25)
+            )
+            entries.append(
+                f'          <paletteEntry value="{code}" color="#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}" '
+                f'alpha="255" label="{escape(CLASS_NAMES[source])} -&gt; {escape(CLASS_NAMES[target])}"/>'
+            )
+    style_path = raster_path.with_suffix(".qml")
+    style_path.write_text(
+        "<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>\n"
+        '<qgis version="3.40" styleCategories="Symbology">\n  <pipe>\n'
+        f'    <rasterrenderer type="paletted" band="1" opacity="{opacity:.6f}" alphaBand="-1" nodataColor="">\n'
+        "      <rasterTransparency/>\n      <colorPalette>\n" + "\n".join(entries)
+        + "\n      </colorPalette>\n    </rasterrenderer>\n  </pipe>\n</qgis>\n",
+        encoding="utf-8",
+    )
     return style_path
 
 

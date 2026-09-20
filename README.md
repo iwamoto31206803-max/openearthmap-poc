@@ -6,6 +6,28 @@ GeoTIFF / GeoPackage を生成する技術検証用PoCです。
 > **Status:** Technical PoC / baseline.
 > `RGB_Real_5_u-efficientnet-b4.pth` の企業内利用・fine-tuning等の利用条件は確認中です。
 
+## Teacher progression diagnostics
+
+`compare_teacher_progression.py` は、既存の単一 GSI RGB GeoTIFF に対して
+Base → Paddy → Paddy+Water → Paddy+Water+Road の固定順で OEM8 推論差分を作ります。
+これは accuracy の順位付けではなく、teacher 追加による変化の帰属を支援する診断です。
+
+```bash
+python compare_teacher_progression.py \
+  --input /path/to/gsi_rgb.tif --name chiba01 \
+  --base-model /path/to/base.pth \
+  --paddy-model /path/to/paddy.pth \
+  --water-model /path/to/paddy_water.pth \
+  --road-model /path/to/paddy_water_road.pth \
+  --focus-transition 85 --focus-transition 34
+```
+
+既定の出力先は `teacher_progression/<name>/` です。共有入力、4 stage、3つの隣接
+transition、`progression_summary.json`、`manifest.json` を保存します。changed-only
+raster は非変化画素を 0（QML では透明）にし、指定した transition の focus raster
+も生成します。stage の GeoPackage には `--polygonize`、既存 run の置換には
+`--overwrite` を明示してください。
+
 ## 推奨実行
 
 リポジトリ直下から:
