@@ -4,7 +4,22 @@ from pathlib import Path
 import argparse
 from html import escape
 
-from config import CLASS_COLORS, CLASS_NAMES
+if __package__:
+    from .config import CLASS_COLORS, CLASS_NAMES
+else:
+    from config import CLASS_COLORS, CLASS_NAMES
+
+
+# Values written by compare_base_ft.py.  Zero is deliberately transparent so
+# that the five road-related transitions stand out over the source imagery.
+ROAD_CHANGE_STYLES = {
+    0: ("Other / not focused", (0, 0, 0, 0)),
+    1: ("Pavement -> Road", (0, 170, 255, 255)),
+    2: ("Road -> Road", (255, 255, 255, 255)),
+    3: ("Road -> Pavement", (255, 170, 0, 255)),
+    4: ("Other -> Road", (0, 220, 80, 255)),
+    5: ("Road -> Other", (230, 40, 60, 255)),
+}
 
 
 def hex_color(rgba: tuple[int, int, int, int]) -> str:
@@ -90,6 +105,31 @@ def write_confidence_style(raster_path: Path) -> Path:
     return style_path
 
 
+def write_road_change_style(raster_path: Path, opacity: float = 0.85) -> Path:
+    """Write a categorical QGIS style for the road-focused comparison map."""
+    style_path = raster_path.with_suffix(".qml")
+    entries = []
+    for value, (label, rgba) in ROAD_CHANGE_STYLES.items():
+        r, g, b, alpha = rgba
+        entries.append(
+            f'          <paletteEntry value="{value}" color="#{r:02x}{g:02x}{b:02x}" '
+            f'alpha="{alpha}" label="{escape(label)}"/>'
+        )
+    qml = (
+        "<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>\n"
+        '<qgis version="3.40" styleCategories="Symbology">\n'
+        "  <pipe>\n"
+        f'    <rasterrenderer type="paletted" band="1" opacity="{opacity:.6f}" '
+        'alphaBand="-1" nodataColor="">\n'
+        "      <rasterTransparency/>\n      <colorPalette>\n"
+        + "\n".join(entries)
+        + "\n      </colorPalette>\n    </rasterrenderer>\n"
+        "  </pipe>\n  <blendMode>0</blendMode>\n</qgis>\n"
+    )
+    style_path.write_text(qml, encoding="utf-8")
+    return style_path
+
+
 def write_vector_landcover_style(gpkg_path: Path, opacity: float = 0.5) -> Path:
     style_path = gpkg_path.with_suffix(".qml")
 
@@ -145,6 +185,7 @@ def main() -> None:
     parser.add_argument("--classes", nargs="*", default=[])
     parser.add_argument("--confidence", nargs="*", default=[])
     parser.add_argument("--vectors", nargs="*", default=[])
+    parser.add_argument("--road-change", nargs="*", default=[])
     parser.add_argument(
         "--landcover-opacity",
         type=float,
@@ -172,6 +213,11 @@ def main() -> None:
         path = Path(value)
         if path.exists():
             created.append(write_vector_landcover_style(path, args.landcover_opacity))
+
+    for value in args.road_change:
+        path = Path(value)
+        if path.exists():
+            created.append(write_road_change_style(path))
 
     print()
     print("QGIS STYLES OK")

@@ -223,6 +223,7 @@ __marimo__/
 
 # Run outputs
 runs/
+comparison/
 training_outputs/
 evaluation_outputs/
 saclaj/
