@@ -1,13 +1,9 @@
-python -m src.training.train_gsi_phase_b ^
-  --org-dir C:\OpenEarthMap_PoC\data\gsi\raw\paddy_572\org ^
-  --prepared-dir C:\OpenEarthMap_PoC\data\gsi\prepared\paddy_572 ^
-  --water-org-dir C:\OpenEarthMap_PoC\data\gsi\working\water_572_fixed\org ^
-  --water-prepared-dir C:\OpenEarthMap_PoC\data\gsi\prepared\water_572 ^
-  --road-org-dir C:\OpenEarthMap_PoC\data\gsi\raw\road_572\org ^
-  --road-prepared-dir C:\OpenEarthMap_PoC\data\gsi\prepared\road_572 ^
-  --base-model C:\OpenEarthMap_PoC\OpenEarthMap-SAR\src\Semantic_Segemtation\pretrained\RGB_Real_5_u-efficientnet-b4.pth ^
-  --base-sha256 852cd4f27627a8b0b34fe35618fabafc85e1ff5025eadc259176ca4ecc23a81c ^
-  --beta-water 0.5 ^
-  --beta-road 1.0 ^
-  --device cpu ^
-  --preflight
+cd /d C:\OpenEarthMap_PoC\openearthmap-poc
+
+set "SACLAJ_CSV=C:\OpenEarthMap_PoC\data\saclaj\raw\Gref_DB_2025_06.csv"
+set "MAPPING=C:\OpenEarthMap_PoC\data\saclaj\saclaj_mapping.v0.1.json"
+set "BASE=C:\OpenEarthMap_PoC\OpenEarthMap-SAR\src\Semantic_Segemtation\pretrained\RGB_Real_5_u-efficientnet-b4.pth"
+set "FT=C:\OpenEarthMap_PoC\openearthmap-poc\training_outputs\gsi_phase_b_v01\20260919T151035_437811Z_0fd54ade\checkpoints\best.pth"
+set "RESULTS=C:\OpenEarthMap_PoC\data\saclaj\results"
+
+python -m src.evaluation.evaluate_s
