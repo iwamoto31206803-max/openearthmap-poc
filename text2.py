@@ -6,4 +6,14 @@ set "BASE=C:\OpenEarthMap_PoC\OpenEarthMap-SAR\src\Semantic_Segemtation\pretrain
 set "FT=C:\OpenEarthMap_PoC\openearthmap-poc\training_outputs\gsi_phase_b_v01\20260919T151035_437811Z_0fd54ade\checkpoints\best.pth"
 set "RESULTS=C:\OpenEarthMap_PoC\data\saclaj\results"
 
-python -m src.evaluation.evaluate_s
+python -m src.evaluation.evaluate_saclaj ^
+  --saclaj-csv "%SACLAJ_CSV%" ^
+  --mapping "%MAPPING%" ^
+  --base-model "%BASE%" ^
+  --fine-tuned-model "%FT%" ^
+  --output-dir "%RESULTS%" ^
+  --device cpu ^
+  --num-threads 2 ^
+  --max-samples-per-category 100 ^
+  --seed 42 ^
+  --preflight
