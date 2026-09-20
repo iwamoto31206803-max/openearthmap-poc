@@ -25,8 +25,8 @@ def write_raster(path: Path, values: np.ndarray, *, origin_x: float = 0) -> None
 
 
 def test_outputs_include_full_matrix_major_transitions_and_changed_raster(tmp_path, capsys):
-    source = np.array([[3, 4, 8], [8, 5, 2], [0, 0, 7]], dtype=np.uint8)
-    target = np.array([[4, 3, 5], [4, 4, 4], [6, 0, 7]], dtype=np.uint8)
+    source = np.array([[3, 4, 8, 8], [5, 2, 7, 6], [7, 5, 0, 0], [7, 1, 1, 1]], dtype=np.uint8)
+    target = np.array([[4, 3, 5, 4], [4, 4, 4, 5], [5, 8, 6, 0], [7, 1, 1, 1]], dtype=np.uint8)
     first, second = tmp_path / "first.tif", tmp_path / "second.tif"
     write_raster(first, source); write_raster(second, target)
     output = tmp_path / "out"
@@ -34,19 +34,24 @@ def test_outputs_include_full_matrix_major_transitions_and_changed_raster(tmp_pa
     assert comparison.main([str(first), str(second), "--label", "02_to_03",
                             "--output-dir", str(output), "--changed-geotiff"]) == 0
     summary = json.loads((output / "02_to_03/summary.json").read_text())
-    assert summary["total_pixel_count"] == 9
-    assert summary["changed_pixel_count"] == 7
-    assert summary["unchanged_pixel_count"] == 2
+    assert summary["total_pixel_count"] == 16
+    assert summary["changed_pixel_count"] == 11
+    assert summary["unchanged_pixel_count"] == 5
     assert len(summary["transitions"]) == 81
     assert len(summary["changed_only_transitions"]) == 72
     assert {(row["from_id"], row["to_id"]): row["pixel_count"]
             for row in summary["major_transitions"]} == {
-                (3, 4): 1, (4, 3): 1, (8, 5): 1, (8, 4): 1, (5, 4): 1, (2, 4): 1}
+                (3, 4): 1, (4, 3): 1, (8, 5): 1, (8, 4): 1, (5, 4): 1,
+                (2, 4): 1, (7, 4): 1, (6, 5): 1, (7, 5): 1, (5, 8): 1}
+    assert len(summary["nonzero_changed_transitions"]) == 11
+    assert all(row["changed"] and row["pixel_count"] > 0
+               for row in summary["nonzero_changed_transitions"])
     assert len(summary["background_transitions"]) == 9
     with (output / "02_to_03/transition_matrix.csv").open() as stream:
         assert len(list(csv.DictReader(stream))) == 81
     with rasterio.open(output / "02_to_03/changed_only.tif") as changed:
-        assert changed.read(1).tolist() == [[34, 43, 85], [84, 54, 24], [6, 0, 0]]
+        assert changed.read(1).tolist() == [
+            [34, 43, 85, 84], [54, 24, 74, 65], [75, 58, 6, 0], [0, 0, 0, 0]]
         assert changed.transform == from_origin(0, 4, 1, 1)
     terminal = capsys.readouterr().out
     assert "Building -> Tree" not in terminal  # OEM8 canonical name is Buildings.

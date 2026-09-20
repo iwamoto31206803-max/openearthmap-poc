@@ -16,7 +16,10 @@ from rasterio.windows import Window, from_bounds, transform as window_transform
 
 from src.config import CLASS_NAMES
 
-MAJOR_TRANSITIONS = ((3, 4), (4, 3), (8, 5), (8, 4), (5, 4), (2, 4))
+MAJOR_TRANSITIONS = (
+    (3, 4), (4, 3), (8, 5), (8, 4), (5, 4), (2, 4),
+    (7, 4), (6, 5), (7, 5), (5, 8),
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -117,6 +120,7 @@ def summarize(source: np.ndarray, target: np.ndarray, label: str, aoi: dict) -> 
             "unchanged_percent": 100.0 * unchanged / total, "changed_pixel_count": changed,
             "changed_percent": 100.0 * changed / total, "transitions": transitions,
             "changed_only_transitions": [row for row in transitions if row["changed"]],
+            "nonzero_changed_transitions": [row for row in transitions if row["changed"] and row["pixel_count"] > 0],
             "major_transitions": major, "background_transitions": background}
 
 

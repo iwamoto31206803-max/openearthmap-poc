@@ -25,11 +25,16 @@ terminalには全pixel数、changed / unchangedの件数と構成比、および
 - Buildings -> Road
 - Tree -> Road
 - Grass / Rangeland -> Road
+- Cropland / Agriculture -> Road
+- Water -> Tree
+- Cropland / Agriculture -> Tree
+- Tree -> Buildings
 - Background / Unlabelled -> 全クラス（unchangedの0 -> 0も含む）
 
 出力先 `/local/transition_diagnostics/02_to_03/` には次を作成する。
 
-- `summary.json`: 入力path、全81遷移、changed-only遷移、主要遷移、AOI、changed / unchanged集計
+- `summary.json`: 入力path、全81遷移、changed-only遷移、件数が1以上の
+  `nonzero_changed_transitions`、主要遷移、AOI、changed / unchanged集計
 - `transition_matrix.csv`: from/to 9 x 9のfull transition matrix（ゼロ件も含む）
 - `changed_only.tif`: `from_id * 10 + to_id`。0はunchanged（オプション指定時のみ）
 
