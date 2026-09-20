@@ -32,6 +32,17 @@ def write_raster(path: Path, values: np.ndarray, *, x_origin: float = 0) -> None
         dst.write(values, 1)
 
 
+def write_existing_input(path: Path, *, lat=35.0, lon=140.0, zoom=18,
+                         width=256, height=256, crs="EPSG:3857") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        path, "w", driver="GTiff", width=width, height=height, count=3,
+        dtype="uint8", crs=crs, transform=from_origin(0, height, 1, 1),
+    ) as dst:
+        dst.write(np.zeros((3, height, width), dtype=np.uint8))
+        dst.update_tags(center_lat=str(lat), center_lon=str(lon), zoom=str(zoom))
+
+
 def model_files(tmp_path: Path) -> tuple[Path, Path]:
     base, ft = tmp_path / "base.pth", tmp_path / "ft.pth"
     base.write_bytes(b"synthetic base")
@@ -102,6 +113,65 @@ def test_single_site_validation_and_mutual_exclusion(tmp_path):
                               "--base-model", str(base), "--fine-tuned-model", str(ft)])
     with pytest.raises(SystemExit):
         comparison.validate_args(parser, args)
+
+
+def test_existing_site_requires_overwrite(tmp_path):
+    base, ft = model_files(tmp_path)
+    output_dir = tmp_path / "comparison"
+    (output_dir / "synthetic").mkdir(parents=True)
+    parser = comparison.build_parser()
+    args = parser.parse_args([
+        "--name", "synthetic", "--lat", "35", "--lon", "140",
+        "--base-model", str(base), "--fine-tuned-model", str(ft),
+        "--output-dir", str(output_dir),
+    ])
+    with pytest.raises(FileExistsError, match="--overwrite"):
+        comparison.process_site(comparison.Site("synthetic", 35, 140), args, ROOT)
+
+
+def test_overwrite_reuses_only_matching_input_and_cleans_outputs(tmp_path):
+    run_dir = tmp_path / "comparison" / "synthetic"
+    input_path = run_dir / "input" / "gsi_rgb.tif"
+    write_existing_input(input_path)
+    original_hash = comparison.sha256_file(input_path)
+    for relative in (
+        "input/obsolete.txt", "base/landcover_raw.gpkg",
+        "fine_tuned/old.tif", "diff/old.json", "manifest.json",
+    ):
+        path = run_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stale", encoding="utf-8")
+
+    reused = comparison.prepare_site_directory(
+        run_dir, True, comparison.Site("synthetic", 35, 140), 18, 1
+    )
+    assert reused is True
+    assert comparison.sha256_file(input_path) == original_hash
+    assert list((run_dir / "input").iterdir()) == [input_path]
+    assert not (run_dir / "base").exists()
+    assert not (run_dir / "fine_tuned").exists()
+    assert not (run_dir / "diff").exists()
+    assert not (run_dir / "manifest.json").exists()
+
+
+@pytest.mark.parametrize(
+    "overrides, requested, mismatch",
+    [
+        ({"lat": 35.1}, (35.0, 140.0, 18, 1), "center_lat"),
+        ({"lon": 140.1}, (35.0, 140.0, 18, 1), "center_lon"),
+        ({"zoom": 17}, (35.0, 140.0, 18, 1), "zoom"),
+        ({"width": 255}, (35.0, 140.0, 18, 1), "width"),
+        ({"height": 255}, (35.0, 140.0, 18, 1), "height"),
+    ],
+)
+def test_existing_input_mismatch_is_rejected(tmp_path, overrides, requested, mismatch):
+    input_path = tmp_path / "input" / "gsi_rgb.tif"
+    write_existing_input(input_path, **overrides)
+    lat, lon, zoom, tiles = requested
+    with pytest.raises(ValueError, match=mismatch):
+        comparison.validate_existing_input(
+            input_path, comparison.Site("synthetic", lat, lon), zoom, tiles
+        )
 
 
 @pytest.mark.parametrize(

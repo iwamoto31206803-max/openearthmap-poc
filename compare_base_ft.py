@@ -8,6 +8,7 @@ import hashlib
 import json
 import platform
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from src.config import (
     CLASS_NAMES,
     DEFAULT_OVERLAP,
     DEFAULT_SIEVE_AREA_M2,
+    GSI_TILE_SIZE,
     INFERENCE_TILE_SIZE,
 )
 from src.model import PREPROCESSING
@@ -38,6 +40,7 @@ ROAD_CHANGE_NAMES = {
     5: "Road -> Other",
 }
 SITE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+COORDINATE_TOLERANCE = 1e-7
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--polygonize-raw", action="store_true")
     parser.add_argument("--skip-vector", action="store_true")
     parser.add_argument("--keep-existing-input", action="store_true")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing site output directory before running.",
+    )
     parser.add_argument("--fail-fast", action="store_true")
     return parser
 
@@ -150,6 +158,72 @@ def aligned_rasters(base_path: Path, ft_path: Path) -> tuple[np.ndarray, np.ndar
         if base.count != 1 or ft.count != 1:
             raise ValueError("Base/FT class rasters must each contain exactly one band")
         return base.read(1), ft.read(1), base.profile.copy()
+
+
+def validate_existing_input(input_path: Path, site: Site, zoom: int, tiles: int) -> None:
+    """Reject reuse when the GeoTIFF does not match the requested acquisition."""
+    if not input_path.is_file():
+        raise FileNotFoundError(
+            f"--keep-existing-input requested but input is missing: {input_path}"
+        )
+    with rasterio.open(input_path) as src:
+        tags = src.tags()
+        mismatches = []
+        try:
+            if not np.isclose(
+                float(tags["center_lat"]), site.lat, rtol=0.0,
+                atol=COORDINATE_TOLERANCE,
+            ):
+                mismatches.append("center_lat")
+        except (KeyError, TypeError, ValueError):
+            mismatches.append("center_lat tag")
+        try:
+            if not np.isclose(
+                float(tags["center_lon"]), site.lon, rtol=0.0,
+                atol=COORDINATE_TOLERANCE,
+            ):
+                mismatches.append("center_lon")
+        except (KeyError, TypeError, ValueError):
+            mismatches.append("center_lon tag")
+        try:
+            if int(tags["zoom"]) != zoom:
+                mismatches.append("zoom")
+        except (KeyError, TypeError, ValueError):
+            mismatches.append("zoom tag")
+        expected_size = tiles * GSI_TILE_SIZE
+        if src.width != expected_size:
+            mismatches.append("width")
+        if src.height != expected_size:
+            mismatches.append("height")
+        if src.crs is None or src.crs.to_epsg() != 3857:
+            mismatches.append("CRS")
+    if mismatches:
+        raise ValueError(
+            "Existing input does not match requested site/acquisition: "
+            + ", ".join(mismatches)
+        )
+
+
+def prepare_site_directory(run_dir: Path, keep_input: bool, site: Site,
+                           zoom: int, tiles: int) -> bool:
+    """Clean an explicitly overwritten site, optionally retaining validated input."""
+    input_path = run_dir / "input" / "gsi_rgb.tif"
+    reuse_input = keep_input and input_path.is_file()
+    if reuse_input:
+        validate_existing_input(input_path, site, zoom, tiles)
+        for path in (run_dir / "base", run_dir / "fine_tuned", run_dir / "diff"):
+            if path.exists():
+                shutil.rmtree(path)
+        manifest = run_dir / "manifest.json"
+        if manifest.exists():
+            manifest.unlink()
+        input_dir = run_dir / "input"
+        for path in input_dir.iterdir():
+            if path != input_path:
+                shutil.rmtree(path) if path.is_dir() else path.unlink()
+    else:
+        shutil.rmtree(run_dir)
+    return reuse_input
 
 
 def transition_code(base: np.ndarray, ft: np.ndarray) -> np.ndarray:
@@ -243,6 +317,15 @@ def software_versions() -> dict:
 def process_site(site: Site, args: argparse.Namespace, root: Path) -> dict:
     started = utc_now()
     run_dir = args.output_dir / site.name
+    reuse_input = False
+    if run_dir.exists():
+        if not args.overwrite:
+            raise FileExistsError(
+                f"site output directory already exists: {run_dir}; use --overwrite"
+            )
+        reuse_input = prepare_site_directory(
+            run_dir, args.keep_existing_input, site, args.zoom, args.tiles
+        )
     input_dir, base_dir = run_dir / "input", run_dir / "base"
     ft_dir, diff_dir = run_dir / "fine_tuned", run_dir / "diff"
     for directory in (input_dir, base_dir, ft_dir, diff_dir):
@@ -283,7 +366,7 @@ def process_site(site: Site, args: argparse.Namespace, root: Path) -> dict:
     save_manifest()
     src = root / "src"
     try:
-        if not (args.keep_existing_input and input_path.is_file()):
+        if not reuse_input:
             run_command([sys.executable, str(src / "download_gsi_geotiff.py"), "--lat", str(site.lat),
                          "--lon", str(site.lon), "--zoom", str(args.zoom), "--tiles", str(args.tiles),
                          "--output", str(input_path)])
