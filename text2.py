@@ -1,1 +1,1 @@
-python -c "from pathlib import Path; import hashlib; [print(p, hashlib.sha256(p.read_bytes()).hexdigest()) for p in Path('training_outputs').rglob('best.pth')]"
+python -c "from pathlib import Path; import hashlib; target='e536052223f2989ef382fd7d1bbfaa0d75662c0757c8362b574b7c28df4d0172'; [print(p) for p in Path('.').rglob('*.pth') if hashlib.sha256(p.read_bytes()).hexdigest()==target]"
