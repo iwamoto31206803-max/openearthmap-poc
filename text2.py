@@ -1,143 +1,344 @@
 from pathlib import Path
-import csv
-import math
+import json
+from collections import Counter
+
+import torch
+from torch.utils.data import DataLoader
+
+from src.model import build_model
+from src.training.train_gsi_phase_b import (
+    ROAD_CLASS,
+    RoadDataset,
+    scan_road_dataset,
+)
+from src.training import replay_preservation as replay
 
 
-ROOT = Path(r"C:\OpenEarthMap_PoC\data\saclaj\results")
+ROOT = Path(r"C:\OpenEarthMap_PoC")
 
-OLD = ROOT / "20260919T101351_262021Z_48be0033" / "site_results.csv"
-NEW = ROOT / "20260920T021202_280390Z_b4c1cedf" / "site_results.csv"
+ROAD_ORG = ROOT / "data" / "gsi" / "raw" / "road_572" / "org"
+ROAD_PREPARED = ROOT / "data" / "gsi" / "prepared" / "road_572"
 
+RUN = (
+    ROOT
+    / "openearthmap-poc"
+    / "training_outputs"
+    / "gsi_phase_b_v01"
+    / "20260919T151035_437811Z_0fd54ade"
+)
 
-def read_rows(path):
-    with path.open("r", encoding="utf-8-sig", newline="") as f:
-        rows = list(csv.DictReader(f))
+VALIDATION_IDS = RUN / "road_positive_validation_ids.json"
 
-    result = {}
+BASE = (
+    ROOT
+    / "OpenEarthMap-SAR"
+    / "src"
+    / "Semantic_Segemtation"
+    / "pretrained"
+    / "RGB_Real_5_u-efficientnet-b4.pth"
+)
 
-    for row in rows:
-        site_id = row["ID"]
+FT = RUN / "checkpoints" / "best.pth"
 
-        if site_id in result:
-            raise RuntimeError(f"duplicate ID: {site_id}")
-
-        result[site_id] = row
-
-    return result
-
-
-def same_float(a, b, tol=1e-12):
-    try:
-        x = float(a)
-        y = float(b)
-    except (TypeError, ValueError):
-        return a == b
-
-    if math.isnan(x) and math.isnan(y):
-        return True
-
-    return abs(x - y) <= tol
+DEVICE = "cpu"
+NUM_THREADS = 2
 
 
-old = read_rows(OLD)
-new = read_rows(NEW)
+CLASS_NAMES = {
+    0: "Background",
+    1: "Bareland",
+    2: "Grass",
+    3: "Pavement",
+    4: "Road",
+    5: "Tree",
+    6: "Water",
+    7: "Agriculture",
+    8: "Buildings",
+}
 
-old_ids = set(old)
-new_ids = set(new)
-common = sorted(old_ids & new_ids)
 
-print("=" * 72)
-print("SACLAJ INPUT IDENTITY CHECK")
-print("=" * 72)
+torch.set_num_threads(NUM_THREADS)
 
-print("old rows =", len(old))
-print("new rows =", len(new))
-print("common IDs =", len(common))
-print("old only =", len(old_ids - new_ids))
-print("new only =", len(new_ids - old_ids))
+
+# ------------------------------------------------------------
+# Reconstruct exactly the Road validation set used in the Pilot
+# ------------------------------------------------------------
+
+validation_ids = set(
+    json.loads(VALIDATION_IDS.read_text(encoding="utf-8"))
+)
+
+road_positive, road_all_ignore = scan_road_dataset(
+    ROAD_ORG,
+    ROAD_PREPARED / "labels",
+)
+
+validation_samples = [
+    sample
+    for sample in road_positive
+    if sample.source_image_id in validation_ids
+]
+
+validation_samples = sorted(
+    validation_samples,
+    key=lambda x: x.source_image_id,
+)
+
+if len(validation_samples) != len(validation_ids):
+    raise RuntimeError(
+        f"Validation reconstruction failed: "
+        f"{len(validation_samples)} samples vs "
+        f"{len(validation_ids)} IDs"
+    )
+
+if len(validation_samples) != 327:
+    raise RuntimeError(
+        f"Expected 327 Road validation samples, "
+        f"got {len(validation_samples)}"
+    )
+
+
+loader = DataLoader(
+    RoadDataset(validation_samples),
+    batch_size=1,
+    shuffle=False,
+    num_workers=0,
+    collate_fn=replay.checked_collate,
+)
+
+
+# ------------------------------------------------------------
+# Models
+# ------------------------------------------------------------
+
+print("Loading Original Base...")
+base_model = build_model(BASE, device=DEVICE)
+base_model.eval()
+
+print("Loading Phase B v0.3 Road...")
+ft_model = build_model(FT, device=DEVICE)
+ft_model.eval()
+
+
+# ------------------------------------------------------------
+# Evaluation
+# ------------------------------------------------------------
+
+positive_pixels = 0
+
+base_road_correct = 0
+ft_road_correct = 0
+
+base_road_prob_sum = 0.0
+ft_road_prob_sum = 0.0
+
+base_distribution = Counter()
+ft_distribution = Counter()
+
+transition = Counter()
+
+
+with torch.inference_mode():
+
+    for index, batch in enumerate(loader, start=1):
+
+        images, labels, image_mask = batch
+
+        images = images.to(DEVICE)
+        labels = labels.to(DEVICE)
+        image_mask = image_mask.to(DEVICE)
+
+        positive = image_mask & (labels == ROAD_CLASS)
+
+        n_positive = int(positive.sum())
+
+        if n_positive == 0:
+            raise RuntimeError(
+                "All-ignore sample reached Road validation"
+            )
+
+        base_logits = base_model(images)
+        ft_logits = ft_model(images)
+
+        base_prob = torch.softmax(base_logits, dim=1)
+        ft_prob = torch.softmax(ft_logits, dim=1)
+
+        base_pred = base_logits.argmax(dim=1)
+        ft_pred = ft_logits.argmax(dim=1)
+
+        positive_pixels += n_positive
+
+        base_road_correct += int(
+            ((base_pred == ROAD_CLASS) & positive).sum()
+        )
+
+        ft_road_correct += int(
+            ((ft_pred == ROAD_CLASS) & positive).sum()
+        )
+
+        base_road_prob_sum += float(
+            base_prob[:, ROAD_CLASS][positive]
+            .double()
+            .sum()
+        )
+
+        ft_road_prob_sum += float(
+            ft_prob[:, ROAD_CLASS][positive]
+            .double()
+            .sum()
+        )
+
+        base_values = base_pred[positive].cpu().tolist()
+        ft_values = ft_pred[positive].cpu().tolist()
+
+        base_distribution.update(base_values)
+        ft_distribution.update(ft_values)
+
+        transition.update(zip(base_values, ft_values))
+
+        if index % 25 == 0 or index == len(validation_samples):
+            print(
+                f"Processed {index}/{len(validation_samples)}"
+            )
+
+
+# ------------------------------------------------------------
+# Summary
+# ------------------------------------------------------------
+
+base_agreement = base_road_correct / positive_pixels
+ft_agreement = ft_road_correct / positive_pixels
+
+base_mean_prob = base_road_prob_sum / positive_pixels
+ft_mean_prob = ft_road_prob_sum / positive_pixels
+
+
 print()
+print("=" * 78)
+print("ROAD VALIDATION — ORIGINAL BASE vs PHASE B v0.3")
+print("=" * 78)
 
-subtype_mismatch = 0
-expected_class_mismatch = 0
-status_mismatch = 0
+print("validation images =", len(validation_samples))
+print("Road positive pixels =", positive_pixels)
 
-common_success = 0
-
-patch_sha_mismatch = 0
-base_predicted_class_mismatch = 0
-base_expected_probability_mismatch = 0
-base_agriculture_probability_mismatch = 0
-
-for site_id in common:
-    a = old[site_id]
-    b = new[site_id]
-
-    if a["subtype"] != b["subtype"]:
-        subtype_mismatch += 1
-
-    if a["expected_class"] != b["expected_class"]:
-        expected_class_mismatch += 1
-
-    if a["status"] != b["status"]:
-        status_mismatch += 1
-
-    if a["status"] == "success" and b["status"] == "success":
-        common_success += 1
-
-        if a["patch_sha256"] != b["patch_sha256"]:
-            patch_sha_mismatch += 1
-
-        if a["base_predicted_class"] != b["base_predicted_class"]:
-            base_predicted_class_mismatch += 1
-
-        if not same_float(
-            a["base_expected_probability"],
-            b["base_expected_probability"],
-        ):
-            base_expected_probability_mismatch += 1
-
-        if not same_float(
-            a["base_agriculture_probability"],
-            b["base_agriculture_probability"],
-        ):
-            base_agriculture_probability_mismatch += 1
-
-
-print("subtype mismatch =", subtype_mismatch)
-print("expected-class mismatch =", expected_class_mismatch)
-print("status mismatch =", status_mismatch)
 print()
-
-print("common-success =", common_success)
-print("patch SHA256 mismatch =", patch_sha_mismatch)
-print("Base predicted-class mismatch =", base_predicted_class_mismatch)
+print("ROAD AGREEMENT")
 print(
-    "Base expected-probability mismatch =",
-    base_expected_probability_mismatch,
+    f"Base = {base_agreement:.6f} "
+    f"({base_agreement * 100:.3f}%)"
 )
 print(
-    "Base agriculture-probability mismatch =",
-    base_agriculture_probability_mismatch,
+    f"FT   = {ft_agreement:.6f} "
+    f"({ft_agreement * 100:.3f}%)"
+)
+print(
+    f"delta = "
+    f"{(ft_agreement - base_agreement) * 100:+.3f} pp"
 )
 
 print()
-print("=" * 72)
+print("ROAD MEAN PROBABILITY")
+print(f"Base = {base_mean_prob:.6f}")
+print(f"FT   = {ft_mean_prob:.6f}")
+print(f"delta = {ft_mean_prob - base_mean_prob:+.6f}")
 
-perfect = (
-    len(old) == 1000
-    and len(new) == 1000
-    and len(common) == 1000
-    and not old_ids - new_ids
-    and not new_ids - old_ids
-    and subtype_mismatch == 0
-    and expected_class_mismatch == 0
-    and status_mismatch == 0
-    and common_success == 1000
-    and patch_sha_mismatch == 0
-    and base_predicted_class_mismatch == 0
-    and base_expected_probability_mismatch == 0
-    and base_agriculture_probability_mismatch == 0
+
+print()
+print("=" * 78)
+print("BASE ARGMAX ON ROAD POSITIVE PIXELS")
+print("=" * 78)
+
+for cls in range(9):
+    count = base_distribution[cls]
+    pct = count / positive_pixels * 100
+
+    print(
+        f"{cls} {CLASS_NAMES[cls]:12s}: "
+        f"{count:10d}  {pct:8.4f}%"
+    )
+
+
+print()
+print("=" * 78)
+print("FT ARGMAX ON ROAD POSITIVE PIXELS")
+print("=" * 78)
+
+for cls in range(9):
+    count = ft_distribution[cls]
+    pct = count / positive_pixels * 100
+
+    print(
+        f"{cls} {CLASS_NAMES[cls]:12s}: "
+        f"{count:10d}  {pct:8.4f}%"
+    )
+
+
+# ------------------------------------------------------------
+# Important transitions
+# ------------------------------------------------------------
+
+print()
+print("=" * 78)
+print("IMPORTANT TRANSITIONS")
+print("=" * 78)
+
+
+def show_transition(src, dst):
+    count = transition[(src, dst)]
+    pct = count / positive_pixels * 100
+
+    print(
+        f"{src} {CLASS_NAMES[src]} "
+        f"-> "
+        f"{dst} {CLASS_NAMES[dst]}: "
+        f"{count} ({pct:.4f}%)"
+    )
+
+
+show_transition(3, 4)  # Pavement -> Road
+show_transition(4, 4)  # Road -> Road
+show_transition(4, 3)  # Road -> Pavement
+show_transition(7, 4)  # Agriculture -> Road
+show_transition(6, 4)  # Water -> Road
+show_transition(5, 4)  # Tree -> Road
+show_transition(8, 4)  # Buildings -> Road
+
+
+print()
+print("=" * 78)
+print("ALL BASE -> FT TRANSITIONS TO ROAD")
+print("=" * 78)
+
+for src in range(9):
+
+    count = transition[(src, ROAD_CLASS)]
+
+    if count == 0:
+        continue
+
+    pct = count / positive_pixels * 100
+
+    print(
+        f"{src} {CLASS_NAMES[src]:12s} "
+        f"-> Road: "
+        f"{count:10d}  {pct:8.4f}%"
+    )
+
+
+print()
+print("=" * 78)
+print("CHECK")
+print("=" * 78)
+
+print(
+    "Expected FT validation agreement from run_manifest "
+    "≈ 0.878671"
 )
 
-print("RESULT =", "PERFECT IDENTITY" if perfect else "NOT PERFECT IDENTITY")
-print("=" * 72)
+print(
+    "Expected FT validation mean probability from run_manifest "
+    "≈ 0.701173"
+)
+
+print()
+print("Done.")
