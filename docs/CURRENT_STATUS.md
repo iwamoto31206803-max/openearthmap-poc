@@ -126,3 +126,7 @@ Manual GTは直近のフェーズではない。次のいずれかに該当す�
 - ローカルのrestricted dataはGitHubへ追加しない。
 - 次はRoad / Building / Tree等のteacherを追加し、multi-teacher条件でWater weightを再評価する。
 - Road v0.3の実データPilotと評価は未実行であり、Road/Pavement trade-offと他classへの副作用は未確認である。
+
+Phase A / Phase Bの隣接する分類GeoTIFF（00 Base、01 +Paddy、02 +Water、03 +Road）の
+class transitionは、[classification transition diagnostics](CLASSIFICATION_TRANSITION_DIAGNOSTICS.md)
+に従って全域またはAOI単位で比較できる。
