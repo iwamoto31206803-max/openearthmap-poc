@@ -1,7 +1,2 @@
-python compare_classification_progression.py ^
-  --stage-00 C:\OpenEarthMap_PoC\teacher_progression\chiba01\stages\00_base\classes_sieve_5m2.tif ^
-  --stage-01 C:\OpenEarthMap_PoC\teacher_progression\chiba01\stages\01_paddy\classes_sieve_5m2.tif ^
-  --stage-02 C:\OpenEarthMap_PoC\teacher_progression\chiba01\stages\02_paddy_water\classes_sieve_5m2.tif ^
-  --stage-03 C:\OpenEarthMap_PoC\teacher_progression\chiba01\stages\03_paddy_water_road\classes_sieve_5m2.tif ^
-  --output-dir C:\OpenEarthMap_PoC\transition_diagnostics\chiba01 ^
-  --changed-geotiff
+python -c "import json,pathlib; root=pathlib.Path(r'C:\OpenEarthMap_PoC\transition_diagnostics\chiba01'); \
+[(lambda d,p: print('\n===',p.name,'===\n','changed:',d['changed_pixel_count'],f\"({d['changed_percent']:.4f}%)\",'\n',*[(f\"{x['from_id']}->{x['to_id']} {x['from_name']} -> {x['to_name']}: {x['pixel_count']} ({x['percent_of_all']:.4f}% all, {x['percent_of_changed']:.4f}% changed)\") for x in d['major_transitions']],sep='\n'))(json.loads((p/'summary.json').read_text(encoding='utf-8')),p) for p in sorted(root.iterdir()) if p.is_dir()]"
