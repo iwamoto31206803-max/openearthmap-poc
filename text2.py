@@ -1,1 +1,1 @@
-python -c "from pathlib import Path; import hashlib; target='e536052223f2989ef382fd7d1bbfaa0d75662c0757c8362b574b7c28df4d0172'; [print(p) for p in Path('.').rglob('*.pth') if hashlib.sha256(p.read_bytes()).hexdigest()==target]"
+python -c "from pathlib import Path; import hashlib; p=Path(r'C:\OpenEarthMap_PoC\training_outputs\gsi_phase_a_v03\pilot\20260917T160534_801449Z_8c785b89\checkpoints\best.pth'); print(p); print(hashlib.sha256(p.read_bytes()).hexdigest())"
