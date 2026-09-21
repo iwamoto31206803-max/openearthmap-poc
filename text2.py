@@ -1,2 +1,2 @@
-del /q C:\OpenEarthMap_PoC\oemsar_data\val_gt_georef\*.tif
-del /q C:\OpenEarthMap_PoC\oemsar_data\val_gt_georef\*.qml
+mkdir C:\OpenEarthMap_PoC\oemsar_data\manifests
+copy C:\OpenEarthMap_PoC\openearthmap-poc\val_gt_georef.csv C:\OpenEarthMap_PoC\oemsar_data\manifests\val_gt_georef.csv
