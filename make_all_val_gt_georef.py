@@ -1,140 +1,143 @@
-from pathlib import Path
 import csv
+from pathlib import Path
 
 import rasterio
-from rasterio.transform import from_origin
-from pyproj import Transformer
 
-# =========================
-# パス設定
-# =========================
-ROOT = Path(r"C:\OpenEarthMap_PoC")
-GT_DIR = ROOT / "oemsar_data" / "val_gt"
-OUT_DIR = ROOT / "oemsar_data" / "val_gt_georef"
-GEO_CSV = ROOT / "oemsar_data" / "val_geography.csv"
+ROOT = Path(r"C:\OpenEarthMap_PoC\oemsar_data")
 
-# 既に作れている georef tif を1枚テンプレートとして使う
-# ここは存在しているものに合わせてください
-TEMPLATE_TIF = OUT_DIR / "ValArea_011_gt_georef.tif"
+SAR_DIR = ROOT / "trainval" / "val" / "sar_images"
+GT_DIR = ROOT / "val_labels" / "val" / "labels"
+OUT_DIR = ROOT / "val_gt_georef"
+GEO_CSV = ROOT / "val_geography.csv"
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# ============================================================
+# OEM8 style
+# 0 = transparent
+# 1-8 = OEM8 classes
+# alpha=115 ≒ 45%
+# ============================================================
 
-# =========================
-# geography csv を読む
-# =========================
-def clean(x):
-    return str(x).strip().strip('"').strip("'")
+ALPHA = 115
 
-def read_geography(csv_path):
-    geo = {}
+OEM8_COLORMAP = {
+    0: (0, 0, 0, 0),
+    1: (180, 80, 70, ALPHA),      # Bareland
+    2: (110, 200, 70, ALPHA),     # Grass / Rangeland
+    3: (190, 190, 190, ALPHA),    # Pavement / Developed space
+    4: (235, 220, 190, ALPHA),    # Road
+    5: (65, 125, 75, ALPHA),      # Tree
+    6: (70, 110, 220, ALPHA),     # Water
+    7: (125, 190, 115, ALPHA),    # Agriculture land
+    8: (220, 75, 60, ALPHA),      # Building
+}
 
-    with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.reader(f)
-        rows = list(reader)
+# ============================================================
+# Japan 54枚を抽出
+# ============================================================
 
-    if not rows:
-        raise RuntimeError(f"CSV is empty: {csv_path}")
+japan_files = set()
 
-    # ヘッダ有無の両対応
-    start_idx = 0
-    first = [clean(v) for v in rows[0]]
+with open(GEO_CSV, "r", encoding="utf-8-sig", newline="") as f:
+    reader = csv.DictReader(f)
 
-    if len(first) >= 4 and first[0].lower() in ("file", "filename", "tile", "name"):
-        start_idx = 1
+    for row in reader:
+        if row["country"].strip() == "Japan":
+            japan_files.add(row["file"].strip())
 
-    for row in rows[start_idx:]:
-        if not row or len(row) < 4:
-            continue
+print("Japan files:", len(japan_files))
 
-        row = [clean(v) for v in row]
-        fname = row[0]
-        epsg = row[1]
-        lon = float(row[2])
-        lat = float(row[3])
+# ============================================================
+# Georeference + style
+# ============================================================
 
-        geo[fname] = {
-            "epsg": epsg,
-            "lon": lon,
-            "lat": lat,
-        }
+ok = 0
+ng = 0
 
-    return geo
+for filename in sorted(japan_files):
 
+    sar_path = SAR_DIR / filename
+    gt_path = GT_DIR / filename
 
-# =========================
-# テンプレートから解像度取得
-# =========================
-with rasterio.open(TEMPLATE_TIF) as src:
-    xres = src.transform.a
-    yres = abs(src.transform.e)
+    out_name = filename.replace(
+        ".tif",
+        "_gt_georef.tif"
+    )
 
-print(f"Template resolution: xres={xres}, yres={yres}")
-
-geo = read_geography(GEO_CSV)
-print(f"Geography rows: {len(geo)}")
-
-# =========================
-# 一括処理
-# =========================
-count_ok = 0
-count_skip = 0
-count_ng = 0
-
-for gt_path in sorted(GT_DIR.glob("ValArea_*.tif")):
-    fname = gt_path.name
-
-    if fname not in geo:
-        print(f"[SKIP] geography not found: {fname}")
-        count_skip += 1
-        continue
-
-    meta_geo = geo[fname]
-    epsg = meta_geo["epsg"]
-    lon = meta_geo["lon"]
-    lat = meta_geo["lat"]
-
-    out_name = gt_path.stem + "_gt_georef.tif"
     out_path = OUT_DIR / out_name
 
+    if not sar_path.exists():
+        print("[NG] SAR missing:", sar_path)
+        ng += 1
+        continue
+
+    if not gt_path.exists():
+        print("[NG] GT missing:", gt_path)
+        ng += 1
+        continue
+
     try:
-        with rasterio.open(gt_path) as src:
-            arr = src.read(1)
-            profile = src.profile.copy()
-            width = src.width
-            height = src.height
+        with rasterio.open(sar_path) as sar:
+            with rasterio.open(gt_path) as gt:
 
-        # 中心座標（lon, lat）を対象CRSへ変換
-        transformer = Transformer.from_crs("EPSG:4326", epsg, always_xy=True)
-        cx, cy = transformer.transform(lon, lat)
+                if (
+                    sar.width != gt.width
+                    or sar.height != gt.height
+                ):
+                    raise RuntimeError(
+                        f"size mismatch "
+                        f"SAR={sar.width}x{sar.height}, "
+                        f"GT={gt.width}x{gt.height}"
+                    )
 
-        # テンプレート解像度を用いて、中心から左上原点を計算
-        left = cx - (width * xres) / 2.0
-        top = cy + (height * yres) / 2.0
+                profile = gt.profile.copy()
 
-        transform = from_origin(left, top, xres, yres)
+                profile.update(
+                    driver="GTiff",
+                    crs=sar.crs,
+                    transform=sar.transform,
+                    compress="lzw",
+                    tiled=True,
+                )
 
-        profile.update(
-            driver="GTiff",
-            crs=epsg,
-            transform=transform,
-            compress="lzw",
-            tiled=True,
-            count=1
-        )
+                data = gt.read()
 
-        with rasterio.open(out_path, "w", **profile) as dst:
-            dst.write(arr, 1)
+                with rasterio.open(
+                    out_path,
+                    "w",
+                    **profile
+                ) as dst:
+                    dst.write(data)
 
-        print(f"[OK] {out_name}")
-        count_ok += 1
+                    # OEM8 color table
+                    dst.write_colormap(
+                        1,
+                        OEM8_COLORMAP
+                    )
+
+                    # class names as metadata
+                    dst.update_tags(
+                        OEM8_1="Bareland",
+                        OEM8_2="Grass/Rangeland",
+                        OEM8_3="Pavement/Developed space",
+                        OEM8_4="Road",
+                        OEM8_5="Tree",
+                        OEM8_6="Water",
+                        OEM8_7="Agriculture land",
+                        OEM8_8="Building",
+                    )
+
+        print("[OK]", out_name)
+        ok += 1
 
     except Exception as e:
-        print(f"[NG] {fname} -> {e}")
-        count_ng += 1
+        print("[NG]", filename, "->", e)
+        ng += 1
 
-print("---- done ----")
-print(f"OK   : {count_ok}")
-print(f"SKIP : {count_skip}")
-print(f"NG   : {count_ng}")
-print(f"OUT  : {OUT_DIR}")
+print()
+print("===== DONE =====")
+print("Japan target :", len(japan_files))
+print("OK           :", ok)
+print("NG           :", ng)
+print("OUT          :", OUT_DIR)
