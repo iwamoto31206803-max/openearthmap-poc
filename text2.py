@@ -1,38 +1,17 @@
 import rasterio
-from rasterio.warp import transform_bounds
 
-p = r"C:\OpenEarthMap_PoC\oemsar_data\trainval\val\sar_images\ValArea_011.tif"
+sar = r"C:\OpenEarthMap_PoC\oemsar_data\trainval\val\sar_images\ValArea_011.tif"
+gt = r"C:\OpenEarthMap_PoC\oemsar_data\val_labels\val\labels\ValArea_011.tif"
+out = r"C:\OpenEarthMap_PoC\oemsar_data\ValArea_011_gt_georef.tif"
 
-with rasterio.open(p) as ds:
-    print("CRS:", ds.crs)
-    print("size:", ds.width, ds.height)
-    print("transform:", ds.transform)
-    print("bounds_native:", ds.bounds)
-
-    b = transform_bounds(
-        ds.crs,
-        "EPSG:4326",
-        *ds.bounds,
-        densify_pts=21,
+with rasterio.open(sar) as s, rasterio.open(gt) as g:
+    profile = g.profile.copy()
+    profile.update(
+        crs=s.crs,
+        transform=s.transform
     )
 
-    left, bottom, right, top = b
+    with rasterio.open(out, "w", **profile) as dst:
+        dst.write(g.read())
 
-    center_lon = (left + right) / 2
-    center_lat = (bottom + top) / 2
-
-    print()
-    print("=== WGS84 ===")
-    print("left  :", left)
-    print("bottom:", bottom)
-    print("right :", right)
-    print("top   :", top)
-
-    print()
-    print("center lat/lon:", center_lat, center_lon)
-
-    print()
-    print("NW:", top, left)
-    print("NE:", top, right)
-    print("SW:", bottom, left)
-    print("SE:", bottom, right)
+print(out)
