@@ -1,23 +1,26 @@
-cd /d C:\OpenEarthMap_PoC\oemsar_data
-
-powershell -NoProfile -Command "Expand-Archive -Path 'C:\OpenEarthMap_PoC\oemsar_data\dfc25_track1_trainval.zip' -DestinationPath 'C:\OpenEarthMap_PoC\oemsar_data\trainval' -Force"
-
 cd /d C:\OpenEarthMap_PoC\oemsar_data\trainval
 
-echo ===== TOP LEVEL =====
-dir
+echo ===== COUNTS =====
+echo train Labels:
+dir /b train\Labels\*.tif | find /c /v ""
+
+echo train RGB:
+dir /b train\rgb_images\*.tif | find /c /v ""
+
+echo train SAR:
+dir /b train\sar_images\*.tif | find /c /v ""
+
+echo val SAR:
+dir /b val\sar_images\*.tif | find /c /v ""
 
 echo.
-echo ===== LABEL-LIKE FOLDERS =====
-dir /s /b /ad *label* 2>nul
+echo ===== FIRST 20 LABELS =====
+dir /b train\Labels\*.tif | more
 
 echo.
-echo ===== RGB / SAR FOLDERS =====
-dir /s /b /ad *rgb* 2>nul
-dir /s /b /ad *sar* 2>nul
+echo ===== FIRST 20 RGB =====
+dir /b train\rgb_images\*.tif | more
 
 echo.
-echo ===== TXT / CSV / JSON =====
-dir /s /b *.txt 2>nul
-dir /s /b *.csv 2>nul
-dir /s /b *.json 2>nul
+echo ===== FIRST 20 SAR =====
+dir /b train\sar_images\*.tif | more
