@@ -145,8 +145,8 @@ def _gt_valid_mask(dataset: rasterio.io.DatasetReader, values: np.ndarray) -> np
     return valid
 
 
-def evaluate_raster_pair(gt_path: Path, prediction_path: Path) -> MetricResult:
-    """Validate and evaluate one pair without reprojection or resampling."""
+def load_raster_pair(gt_path: Path, prediction_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Validate and load one native-grid pair and its GT-valid mask."""
     if not gt_path.is_file():
         raise FileNotFoundError(f"GT raster not found: {gt_path}")
     if not prediction_path.is_file():
@@ -169,7 +169,13 @@ def evaluate_raster_pair(gt_path: Path, prediction_path: Path) -> MetricResult:
         if not np.isin(prediction_values, tuple(VALID_CLASSES)).all():
             raise ValueError("prediction contains class IDs outside 0..8")
         valid_gt = _gt_valid_mask(gt, gt_values)
-        return evaluate_arrays(gt_values, prediction_values, valid_gt)
+        return gt_values, prediction_values, valid_gt
+
+
+def evaluate_raster_pair(gt_path: Path, prediction_path: Path) -> MetricResult:
+    """Validate and evaluate one pair without reprojection or resampling."""
+    gt, prediction, valid_gt = load_raster_pair(gt_path, prediction_path)
+    return evaluate_arrays(gt, prediction, valid_gt)
 
 
 def evaluate_prediction_set(items: Iterable[ManifestItem], dataset_root: Path,
