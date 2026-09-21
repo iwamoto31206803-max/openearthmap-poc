@@ -1,0 +1,1 @@
+python -c "import csv; p=r'C:\OpenEarthMap_PoC\runs\gt54_step1_preflight\dataset_qc.csv'; rows=list(csv.DictReader(open(p,encoding='utf-8'))); [print(r['valarea'], r['crs'], r['transform']) for r in rows if r['valarea'] in {'ValArea_011','ValArea_018','ValArea_062','ValArea_177','ValArea_192','ValArea_050','ValArea_186','ValArea_169'}]"
