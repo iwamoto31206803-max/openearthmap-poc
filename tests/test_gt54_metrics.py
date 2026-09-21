@@ -92,6 +92,14 @@ def test_gt_nodata_mask_is_distinct_from_background(tmp_path):
     assert result.confusion[8, 8] == 0
 
 
+def test_valid_gt_class_outside_oem8_fails_closed(tmp_path):
+    gt_path, prediction_path = tmp_path / "gt.tif", tmp_path / "prediction.tif"
+    write_raster(gt_path, np.array([[0, 1], [9, 8]], dtype=np.uint8))
+    write_raster(prediction_path, np.array([[0, 1], [1, 8]], dtype=np.uint8))
+    with pytest.raises(ValueError, match="valid GT pixels contain classes outside 0..8"):
+        evaluate_raster_pair(gt_path, prediction_path)
+
+
 def test_prediction_nodata_metadata_fails_closed(tmp_path):
     gt_path, prediction_path = tmp_path / "gt.tif", tmp_path / "prediction.tif"
     write_raster(gt_path, np.ones((2, 2), dtype=np.uint8))

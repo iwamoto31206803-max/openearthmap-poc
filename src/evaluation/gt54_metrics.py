@@ -131,11 +131,17 @@ def evaluate_arrays(gt: np.ndarray, prediction: np.ndarray,
 
 
 def _gt_valid_mask(dataset: rasterio.io.DatasetReader, values: np.ndarray) -> np.ndarray:
+    """Build the GT mask and reject non-NoData values outside OEM8."""
     valid = dataset.read_masks(1) != 0
     if dataset.nodata is not None:
         nodata = dataset.nodata
         valid &= ~np.isnan(values) if np.isnan(nodata) else values != nodata
-    valid &= np.isin(values, tuple(VALID_CLASSES))
+    valid_values = values[valid]
+    invalid_classes = np.unique(valid_values[~np.isin(valid_values, tuple(VALID_CLASSES))])
+    if invalid_classes.size:
+        raise ValueError(
+            f"valid GT pixels contain classes outside 0..8: {invalid_classes.tolist()}"
+        )
     return valid
 
 
