@@ -1,18 +1,1 @@
-cd /d C:\OpenEarthMap_PoC\oemsar_data
-
-echo ===== VAL SAR FIRST 20 =====
-dir /b trainval\val\sar_images\*.tif | more
-
-echo.
-echo ===== VAL LABEL FIRST 20 =====
-dir /b val_labels\val\labels\*.tif | more
-
-echo.
-echo ===== COUNTS =====
-dir /b trainval\val\sar_images\*.tif | find /c /v ""
-dir /b val_labels\val\labels\*.tif | find /c /v ""
-
-
-gdalinfo "C:\OpenEarthMap_PoC\oemsar_data\val_labels\val\labels\ValArea_001.tif"
-
-python -c "import rasterio, numpy as np; p=r'C:\OpenEarthMap_PoC\oemsar_data\val_labels\val\labels\ValArea_001.tif'; a=rasterio.open(p).read(1); print(np.unique(a, return_counts=True))"
+python -c "import rasterio, numpy as np; s=r'C:\OpenEarthMap_PoC\oemsar_data\trainval\val\sar_images\ValArea_001.tif'; l=r'C:\OpenEarthMap_PoC\oemsar_data\val_labels\val\labels\ValArea_001.tif'; rs=rasterio.open(s); rl=rasterio.open(l); a=rl.read(1); print('=== SAR ==='); print('size:',rs.width,rs.height,'bands:',rs.count,'dtype:',rs.dtypes); print('crs:',rs.crs); print('transform:',rs.transform); print('bounds:',rs.bounds); print('nodata:',rs.nodata); print('=== LABEL ==='); print('size:',rl.width,rl.height,'bands:',rl.count,'dtype:',rl.dtypes); print('crs:',rl.crs); print('transform:',rl.transform); print('bounds:',rl.bounds); print('nodata:',rl.nodata); print('unique/counts:',np.unique(a,return_counts=True)); print('same size:',(rs.width,rs.height)==(rl.width,rl.height)); print('same transform:',rs.transform==rl.transform)"
