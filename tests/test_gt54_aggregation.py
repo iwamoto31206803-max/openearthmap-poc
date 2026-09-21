@@ -64,17 +64,21 @@ def test_two_tile_overlap_counts_non_owner_only_once_and_pools_regions(tmp_path)
     pred = gt.copy()
     args = _case(tmp_path, [
         ("OwnerRegion", gt, pred, np.array([[True, True]])),
-        ("OtherRegion", gt, pred, np.array([[True, False]])),
+        ("OtherRegion", gt, pred, np.array([[False, False]])),
     ])
     result = evaluate_prediction_set_with_ownership(*args)
     assert result.raw.global_raw.valid_gt_pixels == 4
-    assert result.global_deduplicated.valid_gt_pixels == 3
-    assert sum(region.metrics.confusion.sum() for region in result.regions) == 3
+    assert result.raw.global_raw.valid_gt_pixels > result.global_deduplicated.valid_gt_pixels
+    assert result.global_deduplicated.valid_gt_pixels == 2
     assert np.array_equal(sum((r.metrics.confusion for r in result.regions),
                               np.zeros((9, 9), dtype=np.int64)),
                           result.global_deduplicated.confusion)
     by_region = {region.region: region for region in result.regions}
+    assert by_region["OwnerRegion"].metrics.valid_gt_pixels == 2
+    assert by_region["OtherRegion"].metrics.valid_gt_pixels == 0
+    assert by_region["OwnerRegion"].metrics.confusion[1, 1] == 1
     assert by_region["OwnerRegion"].metrics.confusion[2, 2] == 1
+    assert by_region["OtherRegion"].metrics.confusion[1, 1] == 0
     assert by_region["OtherRegion"].metrics.confusion[2, 2] == 0
 
 
