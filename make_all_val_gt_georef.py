@@ -110,24 +110,6 @@ for filename in sorted(japan_files):
                 ) as dst:
                     dst.write(data)
 
-                    # OEM8 color table
-                    dst.write_colormap(
-                        1,
-                        OEM8_COLORMAP
-                    )
-
-                    # class names as metadata
-                    dst.update_tags(
-                        OEM8_1="Bareland",
-                        OEM8_2="Grass/Rangeland",
-                        OEM8_3="Pavement/Developed space",
-                        OEM8_4="Road",
-                        OEM8_5="Tree",
-                        OEM8_6="Water",
-                        OEM8_7="Agriculture land",
-                        OEM8_8="Building",
-                    )
-
         print("[OK]", out_name)
         ok += 1
 
