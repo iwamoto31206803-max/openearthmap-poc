@@ -1,124 +1,80 @@
-import csv
+import glob
 import math
-from collections import defaultdict
+import os
 
-csv_path = r"C:\OpenEarthMap_PoC\oemsar_data\val_geography.csv"
+import rasterio
+from rasterio.warp import transform_bounds
 
-rows = []
+VAL_DIR = r"C:\OpenEarthMap_PoC\oemsar_data\trainval\val\sar_images"
+TRAIN_RGB_DIR = r"C:\OpenEarthMap_PoC\oemsar_data\trainval\train\rgb_images"
 
-with open(csv_path, "r", encoding="utf-8") as f:
-    reader = csv.DictReader(f)
-    for r in reader:
-        if r["country"] == "Japan":
-            rows.append(
-                {
-                    "file": r["file"],
-                    "crs": r["crs"],
-                    "lon": float(r["lon"]),
-                    "lat": float(r["lat"]),
-                }
-            )
+# 日本 validation 54枚
+val_files = sorted(glob.glob(os.path.join(VAL_DIR, "*.tif")))
 
-def haversine_km(lon1, lat1, lon2, lat2):
-    R = 6371.0088
-    p1 = math.radians(lat1)
-    p2 = math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
+vals = []
 
-    a = (
-        math.sin(dp / 2) ** 2
-        + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    )
+for p in val_files:
+    with rasterio.open(p) as ds:
+        b = transform_bounds(ds.crs, "EPSG:4326", *ds.bounds)
+        left, bottom, right, top = b
+        lon = (left + right) / 2
+        lat = (bottom + top) / 2
 
-    return 2 * R * math.asin(math.sqrt(a))
+        if 122 <= lon <= 154 and 20 <= lat <= 46:
+            vals.append({
+                "file": os.path.basename(p),
+                "lon": lon,
+                "lat": lat,
+            })
 
-threshold_km = 30.0
+print("Japan validation:", len(vals))
 
-# 単純な連結成分クラスタリング
-n = len(rows)
-visited = [False] * n
-clusters = []
+# train RGB の中心座標を取得
+rgb_files = sorted(glob.glob(os.path.join(TRAIN_RGB_DIR, "*.tif")))
+rgbs = []
 
-for i in range(n):
-    if visited[i]:
-        continue
+for i, p in enumerate(rgb_files, start=1):
+    with rasterio.open(p) as ds:
+        if ds.crs is None:
+            continue
 
-    stack = [i]
-    visited[i] = True
-    members = []
+        b = transform_bounds(ds.crs, "EPSG:4326", *ds.bounds)
+        left, bottom, right, top = b
 
-    while stack:
-        j = stack.pop()
-        members.append(j)
+        rgbs.append({
+            "file": os.path.basename(p),
+            "lon": (left + right) / 2,
+            "lat": (bottom + top) / 2,
+        })
 
-        for k in range(n):
-            if visited[k]:
-                continue
+    if i % 500 == 0:
+        print("read RGB:", i)
 
-            d = haversine_km(
-                rows[j]["lon"],
-                rows[j]["lat"],
-                rows[k]["lon"],
-                rows[k]["lat"],
-            )
+def distance_m(a, b):
+    # この距離なら簡易近似で十分
+    lat0 = math.radians((a["lat"] + b["lat"]) / 2)
+    dx = (a["lon"] - b["lon"]) * 111320 * math.cos(lat0)
+    dy = (a["lat"] - b["lat"]) * 110540
+    return math.sqrt(dx * dx + dy * dy)
 
-            if d <= threshold_km:
-                visited[k] = True
-                stack.append(k)
-
-    clusters.append(members)
-
-# 大きい順
-clusters.sort(key=len, reverse=True)
-
-print("=== JAPAN REGION CANDIDATES ===")
-print("threshold_km =", threshold_km)
-print("num_clusters =", len(clusters))
 print()
+print("=== NEAREST TRAIN RGB FOR EACH JAPAN VAL ===")
 
-for idx, members in enumerate(clusters, start=1):
-    lons = [rows[i]["lon"] for i in members]
-    lats = [rows[i]["lat"] for i in members]
+exact_like = 0
 
-    center_lon = sum(lons) / len(lons)
-    center_lat = sum(lats) / len(lats)
+for v in vals:
+    nearest = min(rgbs, key=lambda r: distance_m(v, r))
+    d = distance_m(v, nearest)
+
+    if d < 10:
+        exact_like += 1
 
     print(
-        f"Region {idx}: n={len(members)}, "
-        f"center=({center_lat:.6f}, {center_lon:.6f})"
+        f"{v['file']} -> {nearest['file']} "
+        f"distance={d:.1f} m "
+        f"val=({v['lat']:.6f},{v['lon']:.6f}) "
+        f"rgb=({nearest['lat']:.6f},{nearest['lon']:.6f})"
     )
 
-    for i in sorted(members, key=lambda x: rows[x]["file"]):
-        r = rows[i]
-        print(
-            f"  {r['file']} "
-            f"lat={r['lat']:.6f} lon={r['lon']:.6f} "
-            f"crs={r['crs']}"
-        )
-
-    print()
-
-# CSV出力
-out_csv = r"C:\OpenEarthMap_PoC\oemsar_data\val_japan_regions.csv"
-
-with open(out_csv, "w", newline="", encoding="utf-8") as f:
-    writer = csv.writer(f)
-    writer.writerow(
-        ["region_id", "file", "crs", "lon", "lat"]
-    )
-
-    for idx, members in enumerate(clusters, start=1):
-        for i in members:
-            r = rows[i]
-            writer.writerow(
-                [
-                    idx,
-                    r["file"],
-                    r["crs"],
-                    r["lon"],
-                    r["lat"],
-                ]
-            )
-
-print("CSV:", out_csv)
+print()
+print("within 10 m:", exact_like, "/", len(vals))
