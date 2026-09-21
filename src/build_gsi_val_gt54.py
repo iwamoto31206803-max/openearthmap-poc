@@ -29,7 +29,7 @@ from rasterio.warp import Resampling, reproject, transform_bounds
 TILE_SIZE = 256
 ORIGIN_SHIFT = math.pi * 6378137.0
 DEFAULT_GT_ROOT = Path(r"C:\OpenEarthMap_PoC\oemsar_data\val_gt_georef")
-DEFAULT_MANIFEST = Path(r"C:\OpenEarthMap_PoC\oemsar_data\manifests\val_gt_georef.csv")
+DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / "manifests" / "val_gt_georef.csv"
 DEFAULT_OUTPUT_ROOT = Path(r"C:\OpenEarthMap_PoC\oemsar_data\gsi_val_gt54")
 PILOT_IDS = (
     "ValArea_011", "ValArea_008", "ValArea_016",

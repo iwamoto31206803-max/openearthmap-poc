@@ -1,16 +1,19 @@
 # Current Status
 
-Updated: 2026-09-19
+Updated: 2026-09-21
 
 ## Project goal
 
 GSI航空写真から土地被覆を推論し、QGISで編集可能なGIS初期案を生成する。
-成功の基準は学術的な精度だけではなく、AI出力によって実務上の人手による判読・図化の負担を削減できるかどうかである。
+成功の基準は学術的な精度だけではなく、AI出力によって実務上の人手による判読・図化の
+負担を削減できるかどうかである。
 
-## Current phase
+## Phase A: Closed
 
-Phase Aは監査を含めて完了し、判定は **CONDITIONAL PASS** である。
-現在のlearning-method candidateは **v0.3 preservation-only replay** だが、production modelではない。
+Phase Aは **Closed** であり、milestone reviewの判定は **Conditional Pass** である。
+manual GTを作らず、GSI teacher preparation、fine-tuning、SACLAJ development evaluation、
+preservation手法の比較まで行うPhase Aは完了した。現在のlearning-method candidateは
+v0.3 preservation-only replayだが、production modelではない。
 
 Phase Aでは次を確認した。
 
@@ -18,115 +21,62 @@ Phase Aでは次を確認した。
 - Base-preservationは、その崩壊を緩和した。
 - preservation-only replayは、固定SACLAJ development sample上で適応と保持のtrade-offを改善した。
 
-## Current direction
+詳細は[Phase A Minimal End-to-End実験記録](PHASE_A_MINIMAL_E2E_SUMMARY.md)を参照すること。
 
-次の優先事項は、manual GTではなく **GSI-only expansion** である。
+## Phase B: multi-teacher pilots completed
 
-1. OEM8への意味的な対応が十分明確な公開GSI teacherを追加する。
-2. positive weak label以外ではBaseの挙動を保持する。
-3. SACLAJはdevelopment evaluationにのみ使用する。
-4. QGISと目視による実用面の評価を継続する。
-5. GSI-onlyでの改善が不十分な場合、または独立した最終精度の根拠が必要になった場合にのみmanual GTを検討する。
+Phase Bでは次の段階まで実データPilotと評価を実施済みである。
 
-## Current Phase B work
+1. Paddy-only
+2. Paddy + Water
+3. Paddy + Water + Road
 
-最初に追加するteacher候補は **GSI Dataset-07 Water → OEM8 class 6 Water** である。
+Water追加ではWater agreementの改善と既存class保持のtrade-offを確認した。Road teacher追加では
+Road agreementが改善した一方、広範なnon-local class transition / interferenceも確認した。
+これは局所的なRoad対Pavementの問題だけでは説明できず、teacherを逐次追加する現在の学習設定に
+class間干渉があることを示す診断結果である。
 
-Water teacher audit:
+そのため、現時点ではBuilding / Tree等のteacher追加や広範なbeta tuningへ進まない。
+次の優先事項はobjective、replay構成、source間masking、gradient conflict等の診断である。
+Phase Bの実行条件は[GSI Phase B training](GSI_PHASE_B_TRAINING.md)、隣接stage間の診断方法は
+[classification transition diagnostics](CLASSIFICATION_TRANSITION_DIAGNOSTICS.md)を参照すること。
 
-- Image pairs: 1,250
-- Positive-bearing images: 692
-- All-ignore images: 558
-- Positive pixels: 75,739,120
-- Positive ratio: 18.519%
-- Pairing: valid
-- Size mismatch: documented repair後は0
-- 配布された `val/554.png` は574x574であり、ローカル作業コピーで `[0:572, 0:572]` にcropして修復した。
-- Remaining non-label mismatch: image 529の2 pixels
-- Org exact label-color count: 0
-- Original Base argmax on Water-positive pixels:
-  - Water: 71.6103%
-  - Agriculture: 5.6220%
-- Mean Base Water probability: approximately 0.6697
-- Mean Base Agriculture probability: approximately 0.0555
+## New validation asset: year-matched GT54
 
-Paddy / Water datasets間でbyte-identicalなsource imageのSHA256 overlapは **0** である。
+OEM-SAR / DFC validation由来の日本54枚に含まれるmanual OEM8 GTについて、SARの
+georeferenceを利用して地理参照済みGTを構築した。各地点のGSI年度別航空写真を人手で確認し、
+対応年度を確定した。対象年度は **2007、2017、2018、2019、2020、2021** である。
 
-Phase B v0.1 / v0.2の実データPilotとSACLAJ development evaluationは完了した。
-v0.1は`beta_water=1.0`、v0.2はWater source objective全体だけを0.5倍し、両者とも
-1,028 logical steps / optimizer updates、Water 553 stepsで実行した。
+地点、年度、regionの正式な再現性metadataは
+[`manifests/val_gt_georef.csv`](../manifests/val_gt_georef.csv)として管理する。
+`src/build_gsi_val_gt54.py` は指定年度のGSI RGBをGT gridへreprojectし、year-matched validation
+datasetを構築する。会社PCの実データrunでは次を確認済みである。
 
-- Original Baseから開始する。
-- 既存v0.3のPaddy positive supervisionを維持する。
-- 既存のPaddy unknown Base-KLを維持する。
-- 既存のPaddy all-ignore replayを維持する。
-- Water-positive supervisionを追加する。
-- Water unknown pixelsではBase preservationを使用する。
-- 最初のPilotではWater all-ignore imagesをreplayに追加しない。
-- v0.3との比較可能性のため、optimizer updatesは1,028に保つ。
-- v0.1は`beta_water=1.0`、v0.2はその他の条件を維持してWater source objective全体の
-  weightだけを0.5にする。
+- **54 / 54 items PASS**
+- generated `manifest.csv` の **`alignment_ok=True` を全54件**
+- real GSI tile downloadと、year-matched GSI RGB + georeferenced OEM8 GTの生成成功
 
-主要結果は、v0.3 / v0.1 / v0.2の順にRice 87 / 83 / 85%、Other crop 61 / 53 / 57%、
-Agriculture leakage 2.625 / 1.377 / 2.5%、Water 72 / 89 / 87%である。v0.2はWater改善を
-かなり維持しつつAgriculture側を一部戻す妥協点候補だが、Tree系は明確に回復しなかった。
-したがってWater単独の細かいweight tuningは一旦停止し、multi-teacher GSI-only modelへ進む。
-v0.2を最適とは断定せず、v0.1も棄却しない。詳細は
-[Phase B Water milestone](PHASE_B_WATER_MILESTONE_20260919.md)を参照すること。
-
-次段階の **Phase B v0.3 Road Pilot** 実装を追加したが、実データPilotはまだ実行していない。
-これはv0.2（Original Base start、Paddy + Paddy replay、`beta_water=0.5`、1,028 logical
-steps/updates）へRoad class 4 teacherを追加する比較実験であり、`beta_road=1.0`を初期値とする。
-
-- Road audit: 2,000 images、positive-bearing 1,639、all-ignore 361、positive pixels
-  65,289,637（9.9775%）、pairing valid、size mismatch 0。
-- Road positive上のOriginal BaseはRoad argmax 55.5998%、Pavement / Developed space 33.0333%。
-  主な競合診断は **Road vs Pavement / Developed space** である。
-- Paddy/Roadのbyte-identical source overlapは7、Water/Roadは0。最初のPilotではSHA256により
-  7 Road candidatesをsplit前に除外し、既存Paddy/replay splitは変更しない。
-- Road train poolからseed 42で重複なく1,028件を選び、各Paddy stepに1件を組み込む。
-  Road validationは全件を1回評価し、Road all-ignoreは使用しない。
-- source間のunknown/replay conflictを扱うmulti-teacher-aware maskingはfuture workであり、
-  このPilotには導入しない。
-
-このPilotはRoad追加によるRoad、Pavement、Agriculture / Water / Treeへの影響を測るためのもので、
-Road accuracy、全国generalization、production readiness、最適beta、Pavement境界の解決を主張しない。
-実行条件とcompany-PC commandは[GSI Phase B training](GSI_PHASE_B_TRAINING.md)を参照すること。
+画像、GT、生成dataset、QC出力はGit管理外である。このGT54を今後の主要な
+full-scene manual-GT evaluation assetとする。
+手順と制約は[GSI年度別航空写真 + OEM-SAR validation GT 54枚](GSI_OEMSAR_VAL_GT54.md)を参照すること。
 
 ## Evaluation status
 
-SACLAJ 1,000 pointsはdevelopment evaluationであり、final holdoutではない。
-
-Key v0.3 development metrics:
-
-- Rice → Agriculture: 87%
-- Other crop → Agriculture: 61%
-- Agriculture leakage: 2.625%
-- Water → Water: 72%
-
-Base Waterは81%であり、Waterは未解決のriskとして残る。
-
-## Manual GT policy
-
-Manual GTは直近のフェーズではない。次のいずれかに該当する場合に検討する。
-
-- GSI-onlyによる改善がplateauに達した場合。
-- 実用上の品質が不十分なままの場合。
-- 独立した最終精度またはproduction-readinessの根拠が必要になった場合。
+SACLAJ 1,000 pointsはdevelopment evaluationであり、final holdoutではない。GT54は今後の主要な
+定量評価用assetとして使用するが、公開・配布可否および評価protocolは別途確定する。
+Original Base checkpointのtraining provenanceは完全には確認できていないため、provenance auditが
+完了するまではGT54をindependent holdoutとは扱わない。
+一般的なaccuracy improvement、全国generalization、production readinessは現時点では主張しない。
 
 ## Current constraints / unresolved issues
 
-- 一般的なaccuracy improvementは主張できない。
-- 全国へのgeneralizationは主張できない。
-- v0.3はproduction modelではない。
+- Phase Bで観測したnon-local class interferenceの原因は未確定である。
+- objective / replay / gradient conflictの診断と、GT54評価protocolの確定が必要である。
 - SACLAJはfinal holdoutではない。
-- Water改善とAgriculture/Tree保持のbalanceは未解決である。
-- Water weightだけでTree degradationは解決せず、原因もWater weightだけに帰属できない。
+- GT54とOriginal Base training dataのscene / source-image overlap provenanceは未確認である。
+- provenance auditが完了するまではGT54をindependent holdoutとは扱わない。
 - Base modelのlicensingおよびenterprise-use条件は未解決である。
-- ローカルのrestricted dataはGitHubへ追加しない。
-- 次はRoad / Building / Tree等のteacherを追加し、multi-teacher条件でWater weightを再評価する。
-- Road v0.3の実データPilotと評価は未実行であり、Road/Pavement trade-offと他classへの副作用は未確認である。
-
-Phase A / Phase Bの隣接する分類GeoTIFF（00 Base、01 +Paddy、02 +Water、03 +Road）の
-class transitionは、[classification transition diagnostics](CLASSIFICATION_TRANSITION_DIAGNOSTICS.md)
-に従って全域またはAOI単位で比較できる。
+- GSI tileおよびOEM-SAR GTを組み合わせたdatasetの公開・再配布条件は未整理である。
+- ローカルのrestricted data、モデル重み、checkpoint、生成outputはGitHubへ追加しない。
+- docsのカテゴリ別再編（`status/`、`datasets/`、`training/`、`evaluation/`、`archive/`）は、
+  リンク切れを避けるため今回行わず、将来のhousekeeping候補として残す。

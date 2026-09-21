@@ -16,6 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
 import numpy as np
 import rasterio
 import torch
@@ -420,7 +424,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     sites = validate_args(parser, args)
-    root = Path(__file__).resolve().parent
+    root = REPOSITORY_ROOT
     args.output_dir.mkdir(parents=True, exist_ok=True)
     results = []
     for site in sites:

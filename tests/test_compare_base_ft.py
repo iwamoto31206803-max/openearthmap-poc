@@ -16,7 +16,9 @@ from rasterio.transform import from_origin
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-SPEC = importlib.util.spec_from_file_location("compare_base_ft", ROOT / "compare_base_ft.py")
+SPEC = importlib.util.spec_from_file_location(
+    "compare_base_ft", ROOT / "tools/evaluation/compare_base_ft.py"
+)
 assert SPEC is not None and SPEC.loader is not None
 comparison = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = comparison
@@ -189,7 +191,7 @@ def test_batch_csv_schema_validation(tmp_path, content, message):
 
 def test_cli_help_and_existing_run_poc_regression():
     root = ROOT
-    for script in ("compare_base_ft.py", "run_poc.py"):
+    for script in ("tools/evaluation/compare_base_ft.py", "run_poc.py"):
         result = subprocess.run(
             [sys.executable, str(root / script), "--help"], text=True,
             capture_output=True, check=False,

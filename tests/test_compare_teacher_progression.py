@@ -14,7 +14,7 @@ from rasterio.transform import from_origin
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import compare_teacher_progression as progression
+from tools.evaluation import compare_teacher_progression as progression
 
 
 def write_raster(path: Path, values: np.ndarray, *, origin: float = 0, bands: int = 1) -> None:

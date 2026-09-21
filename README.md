@@ -8,12 +8,12 @@ GeoTIFF / GeoPackage を生成する技術検証用PoCです。
 
 ## Teacher progression diagnostics
 
-`compare_teacher_progression.py` は、既存の単一 GSI RGB GeoTIFF に対して
+`tools/evaluation/compare_teacher_progression.py` は、既存の単一 GSI RGB GeoTIFF に対して
 Base → Paddy → Paddy+Water → Paddy+Water+Road の固定順で OEM8 推論差分を作ります。
 これは accuracy の順位付けではなく、teacher 追加による変化の帰属を支援する診断です。
 
 ```bash
-python compare_teacher_progression.py \
+python -m tools.evaluation.compare_teacher_progression \
   --input /path/to/gsi_rgb.tif --name chiba01 \
   --base-model /path/to/base.pth \
   --paddy-model /path/to/paddy.pth \
@@ -43,31 +43,21 @@ python run_poc.py --lat 35.662 --lon 140.070 --name chiba_test --polygonize-raw
 
 ```text
 openearthmap-poc/
-├─ run_poc.py                 # 標準End-to-End実行入口
-├─ requirements.txt
-├─ README.md
-│
-├─ src/                       # 現在の本線コード
-│  ├─ config.py               # クラス定義・PoC既定値
-│  ├─ download_gsi_geotiff.py
-│  ├─ predict_geotiff_tiled.py
-│  ├─ sieve_landcover.py
-│  ├─ polygonize_landcover.py
-│  ├─ analyze_landcover_gpkg.py
-│  └─ qgis_styles.py
-│
-├─ legacy/                    # 初期技術検証用。標準処理では使用しない
-│  ├─ check_rgb_model.py
-│  ├─ download_gsi_image.py
-│  ├─ predict_rgb.py
-│  └─ predict_rgb_tiled.py
-│
-├─ docs/
-│  ├─ CURRENT_STATUS.md       # 現在の状況と次の優先事項
-│  └─ POC_STATUS_20260912.md  # 過去時点のスナップショット
-└─ examples/
-   └─ README.md
+├─ run_poc.py          # 標準 End-to-End entry point
+├─ src/                # production / reusable implementation
+│  ├─ training/        # GSI fine-tuning
+│  └─ evaluation/      # reusable evaluation code
+├─ tools/
+│  ├─ evaluation/      # analysis / comparison CLI tools
+│  └─ datasets/        # dataset preparation utilities
+├─ manifests/          # reproducibility metadata（実データではない）
+├─ docs/               # design, experiment, and status records
+├─ legacy/             # traceability のため保持する superseded code
+└─ tests/              # automated tests
 ```
+
+モデル重み、dataset、GeoTIFF、checkpoint、実行結果はこの構造へ追加せず、Git 管理外に
+置きます。`manifests/` は dataset 再構築に必要な小さな metadata のみを管理します。
 
 ## Standard pipeline
 
