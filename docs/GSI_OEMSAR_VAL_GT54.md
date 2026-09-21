@@ -51,6 +51,14 @@ python -m src.build_gsi_val_gt54 ^
 生成したoutput dataset、download画像、GTコピー、QC結果はGit管理外とし、repositoryには正式manifest
 `manifests/val_gt_georef.csv`だけを再現性metadataとして保持する。
 
+## Training provenance上の注意
+
+GT54は主要なfull-scene manual-GT evaluation assetとして使用する。ただし、Original Base
+checkpointのtraining provenanceは完全には確認できておらず、GT54とBase training dataの
+scene / source-image overlapも未確認である。Base checkpointの学習にOEM-SAR / OEM由来data、
+今回の54地点、または同一source imageryが含まれていた可能性を現時点では排除できない。
+provenance auditが完了するまでは、GT54をindependent holdoutとは扱わない。
+
 ## QC と制約
 
 各ペアについて size、CRS、transform、bounds、band 数、OEM8 値域 (0--8)、RGB が空でない

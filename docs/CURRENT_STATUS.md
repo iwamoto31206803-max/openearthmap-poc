@@ -56,20 +56,25 @@ datasetを構築する。会社PCの実データrunでは次を確認済みで�
 - generated `manifest.csv` の **`alignment_ok=True` を全54件**
 - real GSI tile downloadと、year-matched GSI RGB + georeferenced OEM8 GTの生成成功
 
-画像、GT、生成dataset、QC出力はGit管理外である。このGT54を今後の主要evaluation assetとする。
+画像、GT、生成dataset、QC出力はGit管理外である。このGT54を今後の主要な
+full-scene manual-GT evaluation assetとする。
 手順と制約は[GSI年度別航空写真 + OEM-SAR validation GT 54枚](GSI_OEMSAR_VAL_GT54.md)を参照すること。
 
 ## Evaluation status
 
 SACLAJ 1,000 pointsはdevelopment evaluationであり、final holdoutではない。GT54は今後の主要な
-独立evaluation assetとして使用するが、公開・配布可否および評価protocolは別途確定する。
+定量評価用assetとして使用するが、公開・配布可否および評価protocolは別途確定する。
+Original Base checkpointのtraining provenanceは完全には確認できていないため、provenance auditが
+完了するまではGT54をindependent holdoutとは扱わない。
 一般的なaccuracy improvement、全国generalization、production readinessは現時点では主張しない。
 
 ## Current constraints / unresolved issues
 
 - Phase Bで観測したnon-local class interferenceの原因は未確定である。
-- objective / replay / gradient conflictの診断と、独立した評価protocolの確定が必要である。
+- objective / replay / gradient conflictの診断と、GT54評価protocolの確定が必要である。
 - SACLAJはfinal holdoutではない。
+- GT54とOriginal Base training dataのscene / source-image overlap provenanceは未確認である。
+- provenance auditが完了するまではGT54をindependent holdoutとは扱わない。
 - Base modelのlicensingおよびenterprise-use条件は未解決である。
 - GSI tileおよびOEM-SAR GTを組み合わせたdatasetの公開・再配布条件は未整理である。
 - ローカルのrestricted data、モデル重み、checkpoint、生成outputはGitHubへ追加しない。
