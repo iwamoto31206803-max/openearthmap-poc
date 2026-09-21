@@ -343,6 +343,9 @@ Tile-level mIoUの単純平均を「GT54 mIoU」と呼ばない。
 
 8地域それぞれについて、region内の重複pixelを除外して評価する。
 
+Globalと同じgeographic ownership maskを使用する。cross-region overlapが存在する場合、
+owned pixelはglobal owner tileのregionへ帰属させる。
+
 各regionでは以下を算出する。
 
 - per-class IoU
@@ -382,7 +385,11 @@ Global rawをPrimary metricとして使用しない。
 
 ### 10.4 Global de-duplicated
 
-GT54全体について、同一地理pixelを1回のみ評価する。
+GT54全体について、deterministicなgeographic ownership maskを用い、
+spatially overlapping coverageを二重計上せず評価する。
+
+これはpixel-identical de-duplicationではない。各tileはnative gridを保持し、
+owned geographic domainにpixel centerが属するpixelだけを評価する。
 
 位置づけ:
 
@@ -453,105 +460,62 @@ Mean Regional mIoUはPrimary metricではない。
 
 ## 12. Spatial De-duplication Preflight
 
-Pixel-level de-duplicationの前に、重複tile間のgrid compatibilityを検証する。
+de-duplication前に、次の2能力を独立して記録する。
 
-少なくとも以下を確認する。
+- `pixel_identical_dedup_available`: overlapping tileをlossless common pixel latticeへ対応可能か
+- `geographic_ownership_available`: native gridのpixel-center ownershipを安全に構成可能か
 
-- CRS equality
-- pixel size equality
-- no raster rotation / shear
-- grid phase / origin compatibility
-- lossless mapping to a common pixel lattice
+CRS、pixel size、rotation / shear、grid phase、bounds reconstructionの検査は、
+pixel-identical方式が可能かを診断するQCとして維持する。
 
-### 12.1 Preflight PASS
+`pixel_identical_dedup_available=False`はformal evaluator全体のfatal errorではない。
+`geographic_ownership_available=True`ならspatial overlap de-duplicationへ進む。
 
-すべてのoverlapping GT tilesが共通pixel latticeへlosslessに対応可能な場合、
-pixel-level de-duplicationへ進む。
-
-### 12.2 Preflight FAIL
-
-重複tile間でlosslessな共通pixel latticeを定義できない場合、
-
-- GTをresampleしない
-- nearest-neighbor等で強制整合しない
-- Global de-duplicated評価を実行しない
-- protocol / data handlingを再検討する
-
-GT gridを評価の正とする原則を優先する。
+`geographic_ownership_available=False`の場合はfail closedとし、de-duplicated評価を実行しない。
+いずれの場合もGTまたはprediction rasterをresample、reproject、nearest-neighbor整合しない。
 
 ---
 
-## 13. Canonical Pixel Identity
+## 13. Geographic Ownership and Pixel-Center Rule
 
-Spatial preflight PASS後、GT54全体にcanonical integer grid indexを定義する。
+各tileは元のnative gridのまま保持する。各native pixel centerをworld coordinateへ変換し、
+そのcenterを含むtile footprintをcandidateとする。
 
-同一地理pixelのidentityはfloating-point coordinatesではなく、
-canonical integer indexで表現する。
+candidateのうち、pixel centerからtile footprint境界までの地理空間距離が最大のtileを
+ownerとする。同値の場合はValArea numeric suffix ascendingで決定する。
 
-概念的には:
+pixelは、そのcenterが当該tileのowned geographic domainに属する場合だけ評価対象とする。
+pixel footprint area intersectionや50% overlap ruleはv1では使用しない。
 
-global_col = integer index from canonical origin and pixel width  
-global_row = integer index from canonical origin and pixel height
+owner selectionはtile geometry、pixel-center position、deterministic tie-breakだけに依存し、
+GT class、prediction、checkpoint、confidence、class frequencyを使用しない。
 
-Pixel key:
-
-(global_row, global_col)
-
-Floating-point座標文字列の直接比較は使用しない。
-
-Canonical latticeの定義とrounding / tolerance ruleは実装時に明示し、
-preflightでlossless compatibilityを確認する。
+footprintとpixel-center coordinateをownership判定用の共通geographic/projected CRSへ
+変換することは許容するが、raster pixel valuesは変換しない。
 
 ---
 
-## 14. GT Conflict Rule
+## 14. GT Disagreement Diagnostic
 
-同一canonical pixelに複数GT observationが存在する場合、
-valid GT class ID集合を比較する。
+native gridが一致しないため、canonical pixel keyに基づく`GT_CONFLICT` formal exclusionは使用しない。
 
-### Consistent GT
+GT disagreementはoptional QC diagnosticとする。例えばnon-owner pixel center位置に対して、
+owner tileのGTをnearest lookupし、agreement / disagreementを集計できる。
 
-すべて同一classの場合:
-
-- consistent overlap
-- GT labelを採用可能
-
-### GT_CONFLICT
-
-2種類以上のvalid class IDが存在する場合:
-
-GT_CONFLICT
-
-とする。
-
-Class 0 Backgroundもvalid classとしてconflict判定に含める。
-
-GT_CONFLICT pixelはGlobal / Region de-duplicated metricから除外する。
-
-以下をQCとして記録する。
-
-- n_overlap_pixels
-- n_consistent_overlap_pixels
-- n_gt_conflict_pixels
-- gt_conflict_rate
-- conflict class combinations
-- involved regions
-- involved tiles
-
-GT conflictが想定以上に多い場合は、
-モデル評価より先にevaluation asset品質を再確認する。
+この診断はowner決定に使用せず、formal metric maskを変更せず、disagreement pixelを自動除外しない。
+実施する場合はclass 0 Backgroundもvalid classとして比較し、lookup methodとsupportを記録する。
 
 ---
 
 ## 15. Prediction Ownership
 
-GT-consistent overlap pixelについて、prediction ownerを一意に決定する。
+spatial overlap内のpixel centerについて、prediction ownerを一意に決定する。
 
 Owner determinationは以下の情報のみに依存する。
 
 - tile geometry
-- canonical grid
-- pixel position relative to tile edge
+- geographic tile footprint
+- pixel-center position relative to footprint boundary
 - deterministic tie-break rule
 
 以下はowner selectionに使用しない。
@@ -562,15 +526,8 @@ Owner determinationは以下の情報のみに依存する。
 
 ### 15.1 Interior distance
 
-各pixelについて:
-
-interior_distance =
-min(
-distance_to_left,
-distance_to_right,
-distance_to_top,
-distance_to_bottom
-)
+各pixel centerについて、ownership判定用CRS上でtile footprint境界までの最小距離を
+`interior_distance`とする。
 
 Interior distanceが最大のtileをownerとする。
 
@@ -828,12 +785,11 @@ Evaluation runごとに少なくとも以下を確認する。
 
 ### Cross-tile grid QC
 
-- overlapping tile CRS compatibility
-- pixel size compatibility
-- rotation / shear
-- grid phase compatibility
-- canonical lattice compatibility
-- preflight PASS / FAIL
+- overlapping footprint detection
+- pixel-identical diagnostic: CRS / pixel size / rotation / shear / grid phase / lattice compatibility
+- `pixel_identical_dedup_available`
+- ownership footprint transformation status
+- `geographic_ownership_available`
 
 ### Class QC
 
@@ -845,10 +801,11 @@ Evaluation runごとに少なくとも以下を確認する。
 
 ### Spatial QC
 
-- overlap pixel count
-- consistent overlap count
-- GT conflict count
-- GT conflict rate
+- raw native-grid pixel count
+- owned pixel count
+- dropped non-owner pixel count
+- pixel centers with multiple candidate footprints
+- GT agreement / disagreement（optional diagnostic）
 - owner map determinism
 - evaluated de-duplicated pixel count
 
@@ -895,8 +852,9 @@ Evaluatorは少なくとも以下を出力する。
 - dataset_qc.csv
 - grid_preflight_qc.csv
 - overlap_qc.csv
-- gt_conflict_pixels.csv
-- owner_map_summary.csv
+- ownership_qc.csv
+- ownership masks（native raster shapeのlocal artifact）
+- gt_disagreement_qc.csv（optional diagnostic）
 
 Exact filenames may be adjusted at implementation review,
 but output semantics must remain fixed。
@@ -962,6 +920,8 @@ v1.0では以下を採用しない。
 - prediction-dependent ownership
 - GT-dependent ownership
 - forced GT resampling for de-duplication
+- forced prediction resampling for de-duplication
+- pixel-identical matching across incompatible native grids
 - post-hoc class selection
 - independent test setという表現
 
@@ -1009,9 +969,9 @@ Evaluator実装へ進む前に、本仕様について少なくとも以下を�
 - metric definitions
 - class-first Equal-region macro definition
 - cross-tile grid preflight
-- canonical pixel identity
-- de-duplication ownership
-- GT conflict handling
+- geographic ownership CRS / footprint handling
+- pixel-center ownership rule
+- GT disagreement diagnostic
 - formal comparison pairs
 - formal comparison surface
 - correction / regression definitions
