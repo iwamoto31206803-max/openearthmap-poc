@@ -4,7 +4,8 @@
 
 日本向け評価用に、OEM-SAR validation 由来の既存 GT 54 枚と GSI 年度別航空写真
 RGB を組にしたデータセットをローカルに構築する。54 地点の対応撮影年度は人手で同定済みで、
-地域ごとに 2007、2017、2018、2019、2020、2021 年のいずれかへ固定する。時期の違いに
+地域ごとに 2007、2017、2018、2019、2020、2021 年のいずれかへ固定する。
+正式manifestは `manifests/val_gt_georef.csv` であり、dataset再構築用metadataとしてGit管理する。時期の違いに
 よる評価誤差を避けるため、最新のシームレス航空写真ではなく manifest 指定年度を使う。
 未対応年度や欠損 tile を別年度へフォールバックしない。
 
@@ -18,17 +19,17 @@ RGB を組にしたデータセットをローカルに構築する。54 地点�
 
 ```bat
 python -m src.build_gsi_val_gt54 ^
-  --manifest C:\OpenEarthMap_PoC\oemsar_data\manifests\val_gt_georef.csv ^
+  --manifest manifests\val_gt_georef.csv ^
   --gt-root C:\OpenEarthMap_PoC\oemsar_data\val_gt_georef ^
   --output-root C:\OpenEarthMap_PoC\oemsar_data\gsi_val_gt54 ^
   --ids ValArea_011 ValArea_008 ValArea_016 ValArea_038 ValArea_075 ValArea_110
 ```
 
-pilot の全行が `PASS` で `manifest.csv` の `alignment_ok=True` になった後に全件を実行する。
+代表6枚のpilot完了後、会社PC / local environmentでreal GSI tile downloadを伴う全件runを実施した。
 
 ```bat
 python -m src.build_gsi_val_gt54 ^
-  --manifest C:\OpenEarthMap_PoC\oemsar_data\manifests\val_gt_georef.csv ^
+  --manifest manifests\val_gt_georef.csv ^
   --gt-root C:\OpenEarthMap_PoC\oemsar_data\val_gt_georef ^
   --output-root C:\OpenEarthMap_PoC\oemsar_data\gsi_val_gt54 ^
   --all
@@ -37,6 +38,18 @@ python -m src.build_gsi_val_gt54 ^
 出力は `rgb_images/`、`labels/`、`manifest.csv` に置く。正常な既存ペアは検証して再利用し、
 再取得には `--overwrite` を付ける。timeout と retry は `--timeout`、`--retries` で指定できる。
 失敗した地点も manifest に NG と理由を記録し、終了 code は 1 になる。partial file は削除する。
+
+## Full-run verification
+
+会社PCの実データ環境で54地点のfull runを完了し、次を確認した。
+
+- **54 / 54 items PASS**
+- generated `manifest.csv` の **`alignment_ok=True` を全54件**
+- real GSI tile downloadにより、指定年度のRGBを各GT gridへreprojectできること
+
+これにより、year-matched GSI RGB + georeferenced OEM8 GTのvalidation dataset構築を確認済みである。
+生成したoutput dataset、download画像、GTコピー、QC結果はGit管理外とし、repositoryには正式manifest
+`manifests/val_gt_georef.csv`だけを再現性metadataとして保持する。
 
 ## QC と制約
 

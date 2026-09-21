@@ -10,7 +10,7 @@ else:
     from config import CLASS_COLORS, CLASS_NAMES
 
 
-# Values written by compare_base_ft.py.  Zero is deliberately transparent so
+# Values written by tools/evaluation/compare_base_ft.py. Zero is deliberately transparent so
 # that the five road-related transitions stand out over the source imagery.
 ROAD_CHANGE_STYLES = {
     0: ("Other / not focused", (0, 0, 0, 0)),

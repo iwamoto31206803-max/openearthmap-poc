@@ -9,10 +9,14 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
 import numpy as np
 import rasterio
 
-from compare_base_ft import run_command, sha256_file, software_versions, utc_now
+from tools.evaluation.compare_base_ft import run_command, sha256_file, software_versions, utc_now
 from src.config import CLASS_NAMES, DEFAULT_OVERLAP, DEFAULT_SIEVE_AREA_M2, INFERENCE_TILE_SIZE
 from src.model import PREPROCESSING
 from src.qgis_styles import write_class_raster_style, write_transition_style
@@ -282,7 +286,7 @@ def process(args: argparse.Namespace, root: Path) -> dict:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser(); args = parser.parse_args(argv); validate_args(parser, args)
     try:
-        process(args, Path(__file__).resolve().parent)
+        process(args, REPOSITORY_ROOT)
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr); return 1
     return 0

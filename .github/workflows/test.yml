@@ -30,4 +30,4 @@ jobs:
         run: python -m pytest -q
 
       - name: Check Python syntax
-        run: python -m compileall -q run_poc.py src tests
+        run: python -m compileall -q run_poc.py src tools tests
