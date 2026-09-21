@@ -239,6 +239,8 @@ data/
 outputs/
 outputs_geotiff/
 analysis_results/
+oemsar_data/
+gsi_val_gt54/
 
 # Model weights / checkpoints
 *.pth
