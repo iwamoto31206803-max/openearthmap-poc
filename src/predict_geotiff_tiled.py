@@ -57,6 +57,12 @@ def image_to_tensor(tile: np.ndarray) -> torch.Tensor:
 
 
 def predict_tiled(image: np.ndarray, model: torch.nn.Module, overlap: int):
+    """Apply the canonical sliding-window inference implementation.
+
+    Callers that only need the formal class raster may ignore the returned
+    confidence array; keeping one implementation prevents batch evaluation
+    from drifting from the established command-line predictor.
+    """
     height, width = image.shape[:2]
     stride = TILE_SIZE - overlap
 
