@@ -176,6 +176,11 @@ def inspect_item(item: ManifestItem, dataset_root: Path) -> RasterMetadata:
     with rasterio.open(rgb_path) as rgb, rasterio.open(gt_path) as gt:
         if rgb.count < 3 or gt.count != 1:
             raise ValueError(f"{item.valarea}: expected at least 3-band RGB and 1-band GT")
+        if any(dtype != "uint8" for dtype in rgb.dtypes[:3]):
+            raise ValueError(
+                f"{item.valarea}: RGB first 3 bands must all be uint8; "
+                f"found {rgb.dtypes[:3]}"
+            )
         if gt.crs is None:
             raise ValueError(f"{item.valarea}: GT has no CRS")
         fields = ("width", "height", "crs", "transform", "bounds")

@@ -153,6 +153,7 @@ def validate_cross_model_identity(rows: list[dict[str, object]]) -> None:
 def run_gt54_inference(*, manifest: Path, dataset_root: Path,
                        checkpoint_paths: dict[str, Path], output_root: Path,
                        overlap: int = DEFAULT_OVERLAP, overwrite: bool = False,
+                       smoke_items: int | None = None,
                        expected_items: int = 54, expected_regions: int = 8,
                        expected_hashes: dict[str, str] = EXPECTED_CHECKPOINT_SHA256,
                        loader: Callable[[Path, str], torch.nn.Module] = build_model,
@@ -166,12 +167,22 @@ def run_gt54_inference(*, manifest: Path, dataset_root: Path,
     inventory = [inspect_item(item, Path(dataset_root)) for item in items]
     checkpoints = preflight_checkpoints(checkpoint_paths, expected=expected_hashes, loader=loader)
     config = inference_config(overlap, implementation_id(Path(__file__).resolve().parents[2]))
+    if smoke_items is not None and not 1 <= smoke_items <= len(inventory):
+        raise ValueError(f"smoke_items must be between 1 and {len(inventory)}")
+    selected_inventory = inventory if smoke_items is None else inventory[:smoke_items]
+    selected_valareas = [source.item.valarea for source in selected_inventory]
+    run_identity = {
+        "run_mode": "formal_full" if smoke_items is None else "smoke_subset",
+        "inventory_item_count": len(inventory),
+        "selected_item_count": len(selected_inventory),
+        "selected_valareas": selected_valareas,
+    }
 
     # Destructive action occurs only after every RGB/GT and checkpoint passes.
     if output_root.exists() and overwrite:
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True)
-    config_payload = {"schema_version": 1, "inference": config,
+    config_payload = {"schema_version": 1, "inference": config, "run": run_identity,
                       "models": [{**asdict(cp), "path": str(cp.path)} for cp in checkpoints]}
     (output_root / "inference_config.json").write_text(
         json.dumps(config_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -180,9 +191,9 @@ def run_gt54_inference(*, manifest: Path, dataset_root: Path,
     model_rows: list[dict[str, object]] = []
     for cp in checkpoints:
         model = loader(cp.path, DEVICE)
-        for source in inventory:
+        for source in selected_inventory:
             with rasterio.open(source.rgb_path) as rgb_src:
-                rgb = np.moveaxis(rgb_src.read([1, 2, 3]), 0, -1).astype(np.uint8)
+                rgb = np.moveaxis(rgb_src.read([1, 2, 3]), 0, -1)
             classes, _confidence = predictor(rgb, model, overlap)
             prediction_path = output_root / cp.model_id / "predictions" / f"{source.item.valarea}.tif"
             _write_prediction(prediction_path, classes, source)
@@ -195,13 +206,21 @@ def run_gt54_inference(*, manifest: Path, dataset_root: Path,
                 "height": source.height, "crs": str(source.crs),
                 "transform": repr(source.transform), "bounds": repr(source.bounds),
                 "prediction_class_min": minimum, "prediction_class_max": maximum, "status": "PASS",
+                "run_mode": run_identity["run_mode"],
+                "inventory_item_count": len(inventory),
+                "selected_item_count": len(selected_inventory),
+                "selected_valareas": json.dumps(selected_valareas),
             })
         del model
         model_rows.append({
             "model_id": cp.model_id, "checkpoint_path": str(cp.path),
             "checkpoint_sha256": cp.sha256, "expected_checkpoint_sha256": cp.expected_sha256,
             **{key: json.dumps(value, sort_keys=True) if isinstance(value, dict) else value
-               for key, value in config.items()}, "item_count": len(inventory), "status": "PASS",
+               for key, value in config.items()},
+            "item_count": len(selected_inventory), "inventory_item_count": len(inventory),
+            "selected_item_count": len(selected_inventory),
+            "run_mode": run_identity["run_mode"],
+            "selected_valareas": json.dumps(selected_valareas), "status": "PASS",
         })
 
     # The same ordered inventory/config is used by construction; verify the recorded evidence too.

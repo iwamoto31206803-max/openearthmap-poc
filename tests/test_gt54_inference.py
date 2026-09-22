@@ -1,5 +1,6 @@
 import csv
 import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -94,6 +95,28 @@ def test_rgb_gt_grid_mismatch(tmp_path):
         inspect_item(item, root)
 
 
+def test_uint8_rgb_passes_preflight(tmp_path):
+    root, manifest = _dataset(tmp_path, ("ValArea_001",))
+    item = load_manifest(manifest, expected_items=1, expected_regions=1)[0]
+    assert inspect_item(item, root).rgb_path.name == "ValArea_001.tif"
+
+
+def test_uint16_rgb_fails_before_predictor_even_outside_smoke_subset(tmp_path):
+    root, manifest = _dataset(tmp_path)
+    _raster(root / "rgb_images" / "ValArea_002.tif",
+            np.zeros((3, 4, 5), dtype=np.uint16))
+    paths, hashes = _checkpoints(tmp_path)
+    calls = []
+    with pytest.raises(ValueError, match="first 3 bands must all be uint8"):
+        run_gt54_inference(
+            manifest=manifest, dataset_root=root, checkpoint_paths=paths,
+            output_root=tmp_path / "out", smoke_items=1, expected_items=2,
+            expected_regions=1, expected_hashes=hashes, loader=_loader,
+            predictor=lambda *args: calls.append(args))
+    assert calls == []
+    assert not (tmp_path / "out").exists()
+
+
 def test_manifest_numeric_order(tmp_path):
     _, manifest = _dataset(tmp_path)
     assert [x.valarea for x in load_manifest(manifest, expected_items=2, expected_regions=1)] == [
@@ -151,3 +174,38 @@ def test_end_to_end_order_contract_and_determinism(tmp_path):
         assert validate_prediction(Path(row["prediction_path"]),
             inspect_item(next(x for x in load_manifest(manifest, expected_items=2, expected_regions=1)
                               if x.valarea == row["valarea"]), root))[1] <= 8
+
+
+def test_smoke_subset_uses_first_numeric_item_and_records_identity(tmp_path):
+    root, manifest = _dataset(tmp_path); paths, hashes = _checkpoints(tmp_path)
+    output = tmp_path / "smoke"
+    rows = run_gt54_inference(
+        manifest=manifest, dataset_root=root, checkpoint_paths=paths, output_root=output,
+        smoke_items=1, expected_items=2, expected_regions=1, expected_hashes=hashes,
+        loader=_loader, predictor=_predictor)
+    assert [(row["model_id"], row["valarea"]) for row in rows] == [
+        (model_id, "ValArea_001") for model_id in MODEL_ORDER]
+    assert all(row["run_mode"] == "smoke_subset" for row in rows)
+    assert all(json.loads(row["selected_valareas"]) == ["ValArea_001"] for row in rows)
+    config = json.loads((output / "inference_config.json").read_text())
+    assert config["run"] == {
+        "run_mode": "smoke_subset", "inventory_item_count": 2,
+        "selected_item_count": 1, "selected_valareas": ["ValArea_001"]}
+    with (output / "inference_qc.csv").open(newline="", encoding="utf-8") as stream:
+        qc = list(csv.DictReader(stream))
+    assert len(qc) == 4
+    assert all(row["run_mode"] == "smoke_subset" and row["item_count"] == "1" for row in qc)
+
+
+def test_no_smoke_option_infers_full_inventory_and_records_formal_mode(tmp_path):
+    root, manifest = _dataset(tmp_path); paths, hashes = _checkpoints(tmp_path)
+    output = tmp_path / "full"
+    rows = run_gt54_inference(
+        manifest=manifest, dataset_root=root, checkpoint_paths=paths, output_root=output,
+        expected_items=2, expected_regions=1, expected_hashes=hashes,
+        loader=_loader, predictor=_predictor)
+    assert len(rows) == 8
+    assert all(row["run_mode"] == "formal_full" for row in rows)
+    config = json.loads((output / "inference_config.json").read_text())
+    assert config["run"]["selected_item_count"] == 2
+    assert config["run"]["selected_valareas"] == ["ValArea_001", "ValArea_002"]

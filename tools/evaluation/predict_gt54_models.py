@@ -22,10 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument(f"--model-{model_id.lower()}", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--overlap", type=int, default=128)
-    parser.add_argument("--expected-items", type=int, default=54,
-                        help="Formal default is 54; override only for a smoke fixture.")
-    parser.add_argument("--expected-regions", type=int, default=8,
-                        help="Formal default is 8; override only for a smoke fixture.")
+    parser.add_argument("--smoke-items", type=int,
+                        help=("After full formal inventory/checkpoint preflight, infer only the "
+                              "first N items in numeric ValArea order."))
     parser.add_argument("--overwrite", action="store_true",
                         help="Replace the entire output root after successful preflight.")
     return parser
@@ -38,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         rows = run_gt54_inference(
             manifest=args.manifest, dataset_root=args.dataset_root, checkpoint_paths=paths,
             output_root=args.output_root, overlap=args.overlap, overwrite=args.overwrite,
-            expected_items=args.expected_items, expected_regions=args.expected_regions)
+            smoke_items=args.smoke_items)
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
