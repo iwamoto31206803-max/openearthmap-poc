@@ -1,1 +1,11 @@
-python -c "import csv; p=r'C:\OpenEarthMap_PoC\runs\gt54_step1_ownership\ownership_qc.csv'; r=list(csv.DictReader(open(p,encoding='utf-8'))); raw=sum(int(x['raw_pixel_count']) for x in r); owned=sum(int(x['owned_pixel_count']) for x in r); dropped=sum(int(x['dropped_pixel_count']) for x in r); overlap=sum(int(x['overlap_center_count']) for x in r); print('rows=',len(r)); print('all_pass=',all(x['status']=='PASS' for x in r)); print('raw=',raw); print('owned=',owned); print('dropped=',dropped); print('raw-owned=',raw-owned); print('overlap_centers=',overlap); print('count_identity=',raw==owned+dropped)"
+mkdir C:\OpenEarthMap_PoC\runs\gt54_perfect_predictions
+
+copy C:\OpenEarthMap_PoC\oemsar_data\gsi_val_gt54\labels\*.tif C:\OpenEarthMap_PoC\runs\gt54_perfect_predictions\
+
+python -m tools.evaluation.evaluate_gt54_predictions ^
+  --manifest manifests\val_gt_georef.csv ^
+  --dataset-root C:\OpenEarthMap_PoC\oemsar_data\gsi_val_gt54 ^
+  --prediction-dir C:\OpenEarthMap_PoC\runs\gt54_perfect_predictions ^
+  --ownership-dir C:\OpenEarthMap_PoC\runs\gt54_step1_ownership ^
+  --output-dir C:\OpenEarthMap_PoC\runs\gt54_step3_perfect ^
+  --model-id PERFECT
