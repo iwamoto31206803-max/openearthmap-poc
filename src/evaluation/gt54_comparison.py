@@ -205,6 +205,23 @@ def analyze_cubes(cubes: dict[tuple[str, str], np.ndarray],
     """Create all deterministic output tables and assert protocol identities."""
     if tuple(cubes) != COMPARISON_PAIRS:
         raise ValueError("comparison pairs must be exactly A->B, A->C, A->D, B->C, C->D")
+    formal_counts = [int(np.asarray(cube, dtype=np.int64).sum()) for cube in cubes.values()]
+    if len(set(formal_counts)) != 1:
+        raise AssertionError("formal comparison surfaces do not have identical pixel counts")
+    before_confusions = {pair: np.asarray(cube, dtype=np.int64).sum(axis=2)
+                         for pair, cube in cubes.items()}
+    after_confusions = {pair: np.asarray(cube, dtype=np.int64).sum(axis=1)
+                        for pair, cube in cubes.items()}
+    model_identity_groups = {
+        "A": (before_confusions[("A", "B")], before_confusions[("A", "C")],
+              before_confusions[("A", "D")]),
+        "B": (after_confusions[("A", "B")], before_confusions[("B", "C")]),
+        "C": (after_confusions[("A", "C")], before_confusions[("C", "D")]),
+        "D": (after_confusions[("A", "D")], after_confusions[("C", "D")]),
+    }
+    if any(not all(np.array_equal(group[0], matrix) for matrix in group[1:])
+           for group in model_identity_groups.values()):
+        raise AssertionError("cross-comparison model confusion identity failed")
     all_metrics, all_changes, summaries, transitions, cube_rows = [], [], [], [], []
     fixed, tops, region_rows, qc = [], [], [], []
     for before_model, after_model in COMPARISON_PAIRS:
@@ -220,11 +237,13 @@ def analyze_cubes(cubes: dict[tuple[str, str], np.ndarray],
         all_metrics.extend(metric_rows); all_changes.extend(change_rows)
         net = semantic["correction"] - semantic["regression"]
         summaries.append({"comparison": name, "formal_valid_pixels": formal,
-                          "semantic_gt_pixels": semantic_support, **direct,
+                          "semantic_gt_pixels": semantic_support,
+                          **{f"semantic_{key}": value for key, value in semantic.items()},
                           "semantic_net_correct_change": net,
                           "semantic_corrected_rate": _rate(semantic["correction"], semantic_support),
                           "semantic_regressed_rate": _rate(semantic["regression"], semantic_support),
-                          "semantic_net_correct_rate": _rate(net, semantic_support)})
+                          "semantic_net_correct_rate": _rate(net, semantic_support),
+                          **{f"all_valid_{key}": value for key, value in direct.items()}})
         prediction_matrix = cube.sum(axis=0)
         for before in range(9):
             for after in range(9):
@@ -271,6 +290,7 @@ def analyze_cubes(cubes: dict[tuple[str, str], np.ndarray],
         after_correct = int(sum(after_conf[c, c] for c in range(1, 9)))
         checks = {
             "categories_exhaustive": sum(direct.values()) == formal,
+            "semantic_categories_exhaustive": sum(semantic.values()) == semantic_support,
             "semantic_support_reconciled": sum(r["gt_support"] for r in change_rows) == semantic_support,
             "prediction_transition_reconciled": int(prediction_matrix.sum()) == formal,
             "cube_reconciled": int(cube.sum()) == formal,
@@ -279,11 +299,14 @@ def analyze_cubes(cubes: dict[tuple[str, str], np.ndarray],
             "after_confusion_reconstructed": int(after_conf.sum()) == formal,
             "per_class_net_identity": all(r["net_correct_change"] == r["corrected_pixels"] - r["regressed_pixels"] for r in change_rows),
             "semantic_net_identity": net == after_correct - before_correct,
+            "semantic_net_category_identity": net == semantic["correction"] - semantic["regression"],
         }
         if not all(checks.values()):
             raise AssertionError(f"{name}: comparison invariant failed: {checks}")
         qc.append({"comparison": name, "status": "PASS", "item_count_per_model": item_count,
                    "ownership_mask_status": ownership_status, "formal_valid_pixels": formal,
+                   "cross_comparison_model_identity": "PASS",
+                   "formal_surface_identity": "PASS",
                    **checks})
 
         if region_cubes:
