@@ -174,8 +174,8 @@ def inspect_item(item: ManifestItem, dataset_root: Path) -> RasterMetadata:
     if not rgb_path.is_file() or not gt_path.is_file():
         raise FileNotFoundError(f"RGB/GT pair missing for {item.valarea}")
     with rasterio.open(rgb_path) as rgb, rasterio.open(gt_path) as gt:
-        if rgb.count != 3 or gt.count != 1:
-            raise ValueError(f"{item.valarea}: expected 3-band RGB and 1-band GT")
+        if rgb.count < 3 or gt.count != 1:
+            raise ValueError(f"{item.valarea}: expected at least 3-band RGB and 1-band GT")
         if gt.crs is None:
             raise ValueError(f"{item.valarea}: GT has no CRS")
         fields = ("width", "height", "crs", "transform", "bounds")
