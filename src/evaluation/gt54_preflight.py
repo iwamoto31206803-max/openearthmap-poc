@@ -176,6 +176,14 @@ def inspect_item(item: ManifestItem, dataset_root: Path) -> RasterMetadata:
     with rasterio.open(rgb_path) as rgb, rasterio.open(gt_path) as gt:
         if rgb.count != 3 or gt.count != 1:
             raise ValueError(f"{item.valarea}: expected 3-band RGB and 1-band GT")
+        # Formal inference has one deliberately narrow preprocessing contract.
+        # Check the source bands here rather than allowing the inference reader
+        # to make a lossy/silent conversion to uint8.
+        if tuple(rgb.dtypes[:3]) != ("uint8", "uint8", "uint8"):
+            raise ValueError(
+                f"{item.valarea}: RGB bands 1-3 must all have dtype uint8; "
+                f"found {tuple(rgb.dtypes[:3])}"
+            )
         if gt.crs is None:
             raise ValueError(f"{item.valarea}: GT has no CRS")
         fields = ("width", "height", "crs", "transform", "bounds")
