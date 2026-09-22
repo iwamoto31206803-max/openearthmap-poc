@@ -216,7 +216,8 @@ def analyze_cubes(cubes: dict[tuple[str, str], np.ndarray],
         "A": (before_confusions[("A", "B")], before_confusions[("A", "C")],
               before_confusions[("A", "D")]),
         "B": (after_confusions[("A", "B")], before_confusions[("B", "C")]),
-        "C": (after_confusions[("A", "C")], before_confusions[("C", "D")]),
+        "C": (after_confusions[("A", "C")], after_confusions[("B", "C")],
+              before_confusions[("C", "D")]),
         "D": (after_confusions[("A", "D")], after_confusions[("C", "D")]),
     }
     if any(not all(np.array_equal(group[0], matrix) for matrix in group[1:])

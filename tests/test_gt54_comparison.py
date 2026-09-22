@@ -147,6 +147,18 @@ def test_cross_comparison_confusion_and_surface_identity_fail_closed():
         analyze_cubes(cubes)
 
 
+def test_b_to_c_after_confusion_participates_in_c_identity():
+    cube = np.zeros((9, 9, 9), dtype=np.int64)
+    cube[1, 1, 1] = 1
+    cubes = _all_pair_cubes(cube)
+    # Preserve B (the before dimension) and the formal pixel count, but make
+    # only B->C's C prediction differ from A->C after and C->D before.
+    cubes[("B", "C")][1, 1, 1] = 0
+    cubes[("B", "C")][1, 1, 2] = 1
+    with pytest.raises(AssertionError, match="model confusion identity"):
+        analyze_cubes(cubes)
+
+
 def _raster(path: Path, values: np.ndarray, *, nodata=None, x=0):
     path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(path, "w", driver="GTiff", width=values.shape[1],
